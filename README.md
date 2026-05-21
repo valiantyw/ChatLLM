@@ -1,4 +1,6 @@
-'''tree
+### File Structure
+
+```tree
 vwLLM/
 |-- .env.example
 |-- README.md 
@@ -7,4 +9,4 @@ vwLLM/
 |-- conversation/
     |-- index.json
     |-- {uuid}.json
-'''
+```
