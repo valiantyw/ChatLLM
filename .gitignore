@@ -1,0 +1,12 @@
+# VS folders
+**/.vs/
+**/.vscode/
+
+# macOS system hidden file
+**/.DS_Store
+
+# Build folders
+**/Build/
+
+# Special files
+**/.env
