@@ -1,12 +1,15 @@
 ### File Structure
 
 ```tree
-vwLLM/
+ChatLLM/
 |-- .env.example
-|-- README.md 
+|-- README.md
 |-- requirements.txt
-|-- tk-LLM.py
-|-- conversation/
+|-- tk-ChatLLM.py
+|-- providers/
+    |-- minimax-api.py
+|-- samples/
+|-- conversations/
     |-- index.json
     |-- {uuid}.json
 ```
