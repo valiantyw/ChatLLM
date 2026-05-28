@@ -7,7 +7,7 @@
 import os, dotenv
 from openai import OpenAI
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv())
 
 client = OpenAI(api_key=os.getenv("MINIMAX_API_KEY"), base_url=os.getenv("MINIMAX_OPENAI_BASE_URL"))
 

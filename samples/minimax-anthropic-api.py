@@ -7,7 +7,7 @@
 import anthropic
 import os, dotenv
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv())
 
 client = anthropic.Client(api_key=os.getenv("MINIMAX_API_KEY"), base_url=os.getenv("MINIMAX_ANTHROPIC_BASE_URL"))
 

@@ -1,7 +1,7 @@
 import requests, json
 import os, dotenv
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv())
 
 url = f"{os.getenv('MINIMAX_BASE_URL')}/music_generation"
 
