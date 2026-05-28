@@ -3,12 +3,22 @@
 # ChatLLM - Chat LLM application with tkinter GUI mode
 #
 
-import os, sys, json, uuid, base64, threading, mimetypes
+import sys
+sys.dont_write_bytecode = True
+
+import os, json, uuid, base64, threading, mimetypes
 from datetime import datetime
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import requests, dotenv
+
+from providers import (
+    call_minimax_native,
+    call_minimax_openai,
+    call_minimax_anthropic,
+)
 
 # Load environment variables
 dotenv.load_dotenv(dotenv.find_dotenv())
@@ -915,22 +925,13 @@ class ChatLLM_GUI(tk.Tk):
         
         try:
             if provider == "MiniMax (Native)":
-                text_result, thinking_result = self.call_minimax_native(model, api_history, prompt, b64_images, system_prompt)
+                text_result, thinking_result = call_minimax_native(model, api_history, prompt, b64_images, system_prompt)
                 success = True
             elif provider == "MiniMax (OpenAI)":
-                text_result, thinking_result = self.call_minimax_openai(model, api_history, prompt, b64_images, system_prompt)
+                text_result, thinking_result = call_minimax_openai(model, api_history, prompt, b64_images, system_prompt)
                 success = True
             elif provider == "MiniMax (Anthropic)":
-                text_result, thinking_result = self.call_minimax_anthropic(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "OpenAI":
-                text_result, thinking_result = self.call_openai(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "Anthropic":
-                text_result, thinking_result = self.call_anthropic(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "Google Gemini":
-                text_result, thinking_result = self.call_gemini(model, api_history, prompt, b64_images, system_prompt)
+                text_result, thinking_result = call_minimax_anthropic(model, api_history, prompt, b64_images, system_prompt)
                 success = True
             else:
                 raise ValueError(f"未识别的API提供商: {provider}")
@@ -947,282 +948,6 @@ class ChatLLM_GUI(tk.Tk):
 
     # ─────────────────────────────────────────────
     #  LLM API Clients Dispatch
-    # ─────────────────────────────────────────────
-    def call_minimax_native(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("MINIMAX_API_KEY")
-        base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
-            
-        url = f"{base_url}/text/chatcompletion_v2"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-        
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-            
-        for msg in history:
-            messages.append({
-                "role": msg["role"],
-                "content": [{"type": "text", "text": msg["content"]}]
-            })
-            
-        user_content = [{"type": "text", "text": prompt}]
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-            
-        messages.append({
-            "role": "user",
-            "content": user_content
-        })
-        
-        payload = {
-            "model": model,
-            "messages": messages
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
-        response.raise_for_status()
-        data = response.json()
-        
-        try:
-            reply = data["choices"][0]["message"]["content"]
-            return reply, ""
-        except (KeyError, IndexError):
-            raise ValueError(f"解析Native API返回的数据结构出错: {json.dumps(data, ensure_ascii=False)}")
-
-    def call_minimax_openai(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("MINIMAX_API_KEY")
-        base_url = os.getenv("MINIMAX_OPENAI_BASE_URL", "https://api.minimaxi.com/v1")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
-            
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-            
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-            
-        user_content = [{"type": "text", "text": prompt}]
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-            
-        content_payload = user_content if b64_images else prompt
-        messages.append({"role": "user", "content": content_payload})
-        
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            extra_body={"reasoning_split": True}
-        )
-        
-        reply = response.choices[0].message.content or ""
-        thinking = ""
-        
-        msg_obj = response.choices[0].message
-        if hasattr(msg_obj, "reasoning_details") and msg_obj.reasoning_details:
-            try:
-                if isinstance(msg_obj.reasoning_details, list) and len(msg_obj.reasoning_details) > 0:
-                    detail = msg_obj.reasoning_details[0]
-                    if isinstance(detail, dict) and 'text' in detail:
-                        thinking = detail['text']
-                    elif hasattr(detail, 'text'):
-                        thinking = detail.text
-                    elif isinstance(detail, str):
-                        thinking = detail
-            except Exception:
-                pass
-                
-        return reply, thinking
-    def call_minimax_anthropic(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("MINIMAX_API_KEY")
-        base_url = os.getenv("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
-            
-        from anthropic import Anthropic
-        client = Anthropic(api_key=api_key, base_url=base_url)
-        
-        messages = []
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-            
-        user_content = [{"type": "text", "text": prompt}]
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime,
-                    "data": b64
-                }
-            })
-            
-        content_payload = user_content if b64_images else prompt
-        messages.append({"role": "user", "content": content_payload})
-        
-        kwargs = {
-            "model": model,
-            "max_tokens": 2048,
-            "messages": messages
-        }
-        if system_prompt:
-            kwargs["system"] = system_prompt
-            
-        response = client.messages.create(**kwargs)
-        
-        reply = ""
-        thinking = ""
-        for block in response.content:
-            if block.type == "thinking":
-                thinking += block.thinking
-            elif block.type == "text":
-                reply += block.text
-                
-        return reply, thinking
-
-    def call_openai(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 OPENAI_API_KEY")
-            
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-            
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-            
-        user_content = [{"type": "text", "text": prompt}]
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-            
-        content_payload = user_content if b64_images else prompt
-        messages.append({"role": "user", "content": content_payload})
-        
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages
-        )
-        reply = response.choices[0].message.content or ""
-        return reply, ""
-
-    def call_anthropic(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        base_url = os.getenv("ANTHROPIC_BASE_URL")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 ANTHROPIC_API_KEY")
-            
-        from anthropic import Anthropic
-        client = Anthropic(api_key=api_key, base_url=base_url)
-        
-        messages = []
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-            
-        user_content = [{"type": "text", "text": prompt}]
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime,
-                    "data": b64
-                }
-            })
-            
-        content_payload = user_content if b64_images else prompt
-        messages.append({"role": "user", "content": content_payload})
-        
-        kwargs = {
-            "model": model,
-            "max_tokens": 4096,
-            "messages": messages
-        }
-        if system_prompt:
-            kwargs["system"] = system_prompt
-            
-        response = client.messages.create(**kwargs)
-        
-        reply = ""
-        thinking = ""
-        for block in response.content:
-            if block.type == "text":
-                reply += block.text
-            elif block.type == "thinking":
-                thinking += block.thinking
-                
-        return reply, thinking
-
-    def call_gemini(self, model, history, prompt, b64_images, system_prompt):
-        api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
-        base_url = os.getenv("GOOGLE_GEMINI_BASE_URL")
-        if not api_key:
-            raise ValueError("未在环境变量中设置 GOOGLE_GEMINI_API_KEY")
-            
-        from google import genai
-        from google.genai import types
-        
-        kwargs = {"api_key": api_key}
-        if base_url:
-            from google.genai.types import HttpOptions
-            kwargs["http_options"] = HttpOptions(base_url=base_url)
-            
-        client = genai.Client(**kwargs)
-        
-        contents = []
-        for msg in history:
-            role_mapping = "user" if msg["role"] == "user" else "model"
-            contents.append(types.Content(
-                role=role_mapping,
-                parts=[types.Part.from_text(text=msg["content"])]
-            ))
-            
-        parts = [types.Part.from_text(text=prompt)]
-        for b64, mime in b64_images:
-            parts.append(types.Part(
-                inline_data=types.Blob(
-                    mime_type=mime,
-                    data=base64.b64decode(b64)
-                )
-            ))
-            
-        contents.append(types.Content(role="user", parts=parts))
-        
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.7
-        )
-        
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=config
-        )
-        return response.text or "", ""
-
-    # ─────────────────────────────────────────────
-    #  Callback Handler after thread finished
     # ─────────────────────────────────────────────
     def handle_api_response(self, text, thinking):
         model = self.model_combo.get()

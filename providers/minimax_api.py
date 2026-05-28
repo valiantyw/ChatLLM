@@ -337,9 +337,163 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
     return data
 
 # ───────────────────────────────────────────────────────────────────────── #
+# Core Chat Integration Methods
+# ───────────────────────────────────────────────────────────────────────── #
+
+def call_minimax_native(model, history, prompt, b64_images, system_prompt):
+    api_key = os.getenv("MINIMAX_API_KEY")
+    base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+    if not api_key:
+        raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
+        
+    url = f"{base_url}/text/chatcompletion_v2"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+        
+    for msg in history:
+        messages.append({
+            "role": msg["role"],
+            "content": [{"type": "text", "text": msg["content"]}]
+        })
+        
+    user_content = [{"type": "text", "text": prompt}]
+    for b64, mime in b64_images:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"}
+        })
+        
+    messages.append({
+        "role": "user",
+        "content": user_content
+    })
+    
+    payload = {
+        "model": model,
+        "messages": messages
+    }
+    
+    response = requests.post(url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+    
+    try:
+        reply = data["choices"][0]["message"]["content"]
+        return reply, ""
+    except (KeyError, IndexError):
+        raise ValueError(f"解析Native API返回的数据结构出错: {json.dumps(data, ensure_ascii=False)}")
+
+
+def call_minimax_openai(model, history, prompt, b64_images, system_prompt):
+    api_key = os.getenv("MINIMAX_API_KEY")
+    base_url = os.getenv("MINIMAX_OPENAI_BASE_URL", "https://api.minimaxi.com/v1")
+    if not api_key:
+        raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
+        
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+        
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+        
+    user_content = [{"type": "text", "text": prompt}]
+    for b64, mime in b64_images:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"}
+        })
+        
+    content_payload = user_content if b64_images else prompt
+    messages.append({"role": "user", "content": content_payload})
+    
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        extra_body={"reasoning_split": True}
+    )
+    
+    reply = response.choices[0].message.content or ""
+    thinking = ""
+    
+    msg_obj = response.choices[0].message
+    if hasattr(msg_obj, "reasoning_details") and msg_obj.reasoning_details:
+        try:
+            if isinstance(msg_obj.reasoning_details, list) and len(msg_obj.reasoning_details) > 0:
+                detail = msg_obj.reasoning_details[0]
+                if isinstance(detail, dict) and 'text' in detail:
+                    thinking = detail['text']
+                elif hasattr(detail, 'text'):
+                    thinking = detail.text
+                elif isinstance(detail, str):
+                    thinking = detail
+        except Exception:
+            pass
+            
+    return reply, thinking
+
+
+def call_minimax_anthropic(model, history, prompt, b64_images, system_prompt):
+    api_key = os.getenv("MINIMAX_API_KEY")
+    base_url = os.getenv("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+    if not api_key:
+        raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
+        
+    from anthropic import Anthropic
+    client = Anthropic(api_key=api_key, base_url=base_url)
+    
+    messages = []
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+        
+    user_content = [{"type": "text", "text": prompt}]
+    for b64, mime in b64_images:
+        user_content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": b64
+            }
+        })
+        
+    content_payload = user_content if b64_images else prompt
+    messages.append({"role": "user", "content": content_payload})
+    
+    kwargs = {
+        "model": model,
+        "max_tokens": 2048,
+        "messages": messages
+    }
+    if system_prompt:
+        kwargs["system"] = system_prompt
+        
+    response = client.messages.create(**kwargs)
+    
+    reply = ""
+    thinking = ""
+    for block in response.content:
+        if block.type == "thinking":
+            thinking += block.thinking
+        elif block.type == "text":
+            reply += block.text
+            
+    return reply, thinking
+
+
+# ───────────────────────────────────────────────────────────────────────── #
 # Main Interactive Menu
 # ───────────────────────────────────────────────────────────────────────── #
-if __name__ == "__main__":
+def main():
     env_path = dotenv.find_dotenv()
     if env_path:
         dotenv.load_dotenv(env_path)
@@ -425,3 +579,6 @@ if __name__ == "__main__":
             
         else:
             print("输入无效，请重新选择！")
+
+if __name__ == "__main__":
+    main()
