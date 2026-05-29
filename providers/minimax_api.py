@@ -1,4 +1,4 @@
-﻿import os, sys, json
+import os, sys, json
 import dotenv, requests
 
 # Load environment variables
@@ -286,7 +286,7 @@ def image_MiniMax(prompt="A man in a white t-shirt, full-body, standing front vi
         return None
 
     data = response.json()
-    print(json.dumps(data, indent=4, ensure_ascii=False))
+    #print(json.dumps(data, indent=4, ensure_ascii=False))
     return data
 
 # ───────────────────────────────────────────────────────────────────────── #
@@ -305,14 +305,9 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
         "Authorization": f"Bearer {api_key}"
     }
 
-    # If lyrics not provided, use default
-    if lyrics is None:
-        lyrics = DEFAULT_LYRICS
-
     payload = {
         "model": model,
         "prompt": prompt,
-        "lyrics": lyrics,
         "audio_setting": {
             "sample_rate": sample_rate,
             "bitrate": bitrate,
@@ -320,6 +315,9 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
         },
         "output_format": output_format
     }
+
+    if lyrics:
+        payload["lyrics"] = lyrics
 
     if audio_url:
         payload["audio_url"] = audio_url
@@ -333,7 +331,7 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
         return None
 
     data = response.json()
-    print(json.dumps(data, indent=4, ensure_ascii=False))
+    #print(json.dumps(data, indent=4, ensure_ascii=False))
     return data
 
 # ───────────────────────────────────────────────────────────────────────── #
