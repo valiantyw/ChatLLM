@@ -78,6 +78,60 @@ def read_image_base64(filepath):
         return None, None
 
 # ─────────────────────────────────────────────
+#  Color & Style Constants
+# ─────────────────────────────────────────────
+# Title bar colors
+TB_BG        = "#e2e8f0"
+TB_FG        = "#1e293b"
+TB_HOVER     = "#cbd5e1"
+CLOSE_HOVER  = "#ef4444"
+
+# Chat bubble colors
+BUBBLE_USER_BG       = "#e0f2fe"   # Blue 100
+BUBBLE_ASSISTANT_BG  = "#f1f5f9"   # Slate 100
+BUBBLE_SYSTEM_BG     = "#fef3c7"   # Amber 100
+BUBBLE_THINKING_BG   = "#fafafa"   # Zinc 50
+
+# Text colors
+TEXT_DARK    = "#0f172a"   # Slate 900
+TEXT_MEDIUM  = "#475569"   # Slate 600
+TEXT_LIGHT   = "#64748b"   # Slate 500
+TEXT_GRAY    = "#94a3b8"   # Slate 400 - light gray for placeholders
+
+# Accent colors
+ACCENT_BLUE      = "#3b82f6"   # Blue 500 - selection highlight
+ACCENT_VIOLET    = "#7c3aed"   # Violet 600
+ACCENT_PURPLE    = "#722ed1"   # Purple for attachment labels
+
+# Special text colors
+COLOR_ERROR      = "#ef4444"   # Red 500
+COLOR_AMBER      = "#d97706"   # Amber 600 - system prompt
+COLOR_ZINC_DARK  = "#52525b"   # Zinc 600 - thinking text
+COLOR_ZINC_MID   = "#71717a"   # Zinc 500 - thinking title
+
+# Accent colors
+ACCENT_BLUE      = "#3b82f6"   # Blue 500 - selection highlight
+ACCENT_VIOLET    = "#7c3aed"   # Violet 600
+
+# Image size constants
+THUMBNAIL_CARD_SIZE  = 180  # Card thumbnail max width
+INLINE_IMAGE_MAX_W   = 350  # Inline image display max width
+IMAGE_SCROLL_STEP    = 220  # Scroll step for multi-image carousel
+
+# Network timeout constants (seconds)
+DOWNLOAD_TIMEOUT_SHORT = 30   # Image download timeout
+DOWNLOAD_TIMEOUT_DEFAULT = 60  # Default download timeout
+DOWNLOAD_TIMEOUT_LARGE = 120  # Large file (audio) download timeout
+
+# Bubble layout margins
+BUBBLE_CHAT_MARGIN    = 180  # Push margin to create bubble effect
+BUBBLE_CENTER_MARGIN  = 120  # Center margin for system messages
+
+# Font families
+FONT_UI      = "Microsoft YaHei"
+FONT_SYSTEM  = "Segoe UI"
+
+# ─────────────────────────────────────────────
 #  GUI
 # ─────────────────────────────────────────────
 class ChatLLM_GUI(tk.Tk):
@@ -124,10 +178,10 @@ class ChatLLM_GUI(tk.Tk):
         # Customize standard widgets with clean, modern styles
         self.style.configure("TFrame", background="#f8fafc")
         self.style.configure("TLabelframe", background="#fafafa", borderwidth=1, relief="solid")
-        self.style.configure("TLabelframe.Label", background="#fafafa", font=("Microsoft YaHei", 9, "bold"), foreground="#475569")
-        self.style.configure("TLabel", background="#f8fafc", font=("Microsoft YaHei", 10), foreground="#1e293b")
-        self.style.configure("TButton", font=("Microsoft YaHei", 9), relief="flat")
-        self.style.configure("TCombobox", font=("Microsoft YaHei", 10))
+        self.style.configure("TLabelframe.Label", background="#fafafa", font=(FONT_UI, 9, "bold"), foreground=TEXT_MEDIUM)
+        self.style.configure("TLabel", background="#f8fafc", font=(FONT_UI, 10), foreground=TEXT_DARK)
+        self.style.configure("TButton", font=(FONT_UI, 9), relief="flat")
+        self.style.configure("TCombobox", font=(FONT_UI, 10))
         
         # Build UI layout
         self.setup_ui()
@@ -146,18 +200,13 @@ class ChatLLM_GUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
     def setup_ui(self):
         # ── Custom Title Bar ──────────────────────────
-        TB_BG       = "#e2e8f0"   # Clean slate gray titlebar background
-        TB_FG       = "#1e293b"   # Slate 800 title text
-        TB_HOVER    = "#cbd5e1"   # Hover background
-        CLOSE_HOVER = "#ef4444"   # Close button hover color (red)
-
         tb = tk.Frame(self, bg=TB_BG, height=36)
         tb.pack(fill=tk.X, side=tk.TOP)
         tb.pack_propagate(False)
 
         # Left: app title
         title_lbl = tk.Label(tb, text=" 💬 ChatLLM - 智能助手", bg=TB_BG, fg=TB_FG,
-                             font=("Microsoft YaHei", 10, "bold"), padx=5)
+                             font=(FONT_UI, 10, "bold"), padx=5)
         title_lbl.pack(side=tk.LEFT, padx=(8, 0))
 
         # Right: Close / Maximise / Minimise buttons
@@ -180,7 +229,7 @@ class ChatLLM_GUI(tk.Tk):
         ]:
             _b = tk.Button(tb, text=_txt, command=_cmd,
                            bg=TB_BG, fg=TB_FG, relief="flat", bd=0,
-                           font=("Segoe UI", 10), cursor="arrow",
+                           font=(FONT_SYSTEM, 10), cursor="arrow",
                            activebackground=_hcolor, activeforeground="black")
             _b.pack(side=tk.RIGHT, fill=tk.Y)
             
@@ -249,12 +298,12 @@ class ChatLLM_GUI(tk.Tk):
             bd=0, 
             highlightthickness=1, 
             highlightbackground="#cbd5e1",
-            highlightcolor="#3b82f6",
-            selectbackground="#3b82f6",
+            highlightcolor=ACCENT_BLUE,
+            selectbackground=ACCENT_BLUE,
             selectforeground="#ffffff",
-            font=("Microsoft YaHei", 10),
+            font=(FONT_UI, 10),
             bg="#fbfbfb",
-            fg="#1e293b",
+            fg=TEXT_DARK,
             activestyle="none"
         )
         self.history_listbox.pack(side="left", fill="both", expand=True)
@@ -297,12 +346,12 @@ class ChatLLM_GUI(tk.Tk):
             bd=0, 
             highlightthickness=1, 
             highlightbackground="#cbd5e1",
-            highlightcolor="#3b82f6",
-            font=("Microsoft YaHei", 9),
+            highlightcolor=ACCENT_BLUE,
+            font=(FONT_UI, 9),
             bg="#fbfbfb",
-            fg="#475569",
+            fg=TEXT_MEDIUM,
             selectbackground="#cbd5e1",
-            selectforeground="#1e293b",
+            selectforeground=TEXT_DARK,
             padx=4,
             pady=4
         )
@@ -329,7 +378,7 @@ class ChatLLM_GUI(tk.Tk):
         chat_header = ttk.Frame(self.chat_frame, padding=(5, 5))
         chat_header.pack(side="top", fill="x")
         
-        self.lbl_session_title = ttk.Label(chat_header, text="", font=("Microsoft YaHei", 10, "bold"), foreground="#1e293b")
+        self.lbl_session_title = ttk.Label(chat_header, text="", font=(FONT_UI, 10, "bold"), foreground=TEXT_DARK)
         self.lbl_session_title.pack(side="left", padx=10)
         
         # Split chat_frame vertically using vertical PanedWindow
@@ -349,9 +398,9 @@ class ChatLLM_GUI(tk.Tk):
             highlightbackground="#e2e8f0",
             highlightcolor="#e2e8f0",
             bg="#ffffff",
-            font=("Microsoft YaHei", 10),
+            font=(FONT_UI, 10),
             selectbackground="#cbd5e1",
-            selectforeground="#1e293b",
+            selectforeground=TEXT_DARK,
             cursor="xterm"
         )
         self.chat_display.pack(side="left", fill="both", expand=True)
@@ -367,8 +416,8 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "user",
             justify="right",
-            foreground="#64748b",      # Slate 500
-            font=("Microsoft YaHei", 9, "italic"),
+            foreground=TEXT_LIGHT,
+            font=(FONT_UI, 9, "italic"),
             spacing1=15,
             spacing3=4,
             rmargin=15
@@ -376,11 +425,11 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "user_body",
             justify="right",
-            foreground="#0f172a",      # Slate 900
-            background="#e0f2fe",      # Blue 100
-            font=("Microsoft YaHei", 10),
-            lmargin1=180,              # Push left margin inwards to make it a right-sided bubble
-            lmargin2=180,
+            foreground=TEXT_DARK,
+            background=BUBBLE_USER_BG,
+            font=(FONT_UI, 10),
+            lmargin1=BUBBLE_CHAT_MARGIN,
+            lmargin2=BUBBLE_CHAT_MARGIN,
             rmargin=15,
             spacing1=2,
             spacing2=4,
@@ -389,8 +438,8 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "assistant",
             justify="left",
-            foreground="#64748b",      # Slate 500
-            font=("Microsoft YaHei", 9, "italic"),
+            foreground=TEXT_LIGHT,
+            font=(FONT_UI, 9, "italic"),
             spacing1=15,
             spacing3=4,
             lmargin1=15
@@ -398,12 +447,12 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "assistant_body",
             justify="left",
-            foreground="#0f172a",      # Slate 900
-            background="#f1f5f9",      # Slate 100
-            font=("Microsoft YaHei", 10),
+            foreground=TEXT_DARK,
+            background=BUBBLE_ASSISTANT_BG,
+            font=(FONT_UI, 10),
             lmargin1=15,
             lmargin2=15,
-            rmargin=180,               # Push right margin inwards to make it a left-sided bubble
+            rmargin=BUBBLE_CHAT_MARGIN,
             spacing1=2,
             spacing2=4,
             spacing3=15,
@@ -411,20 +460,20 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "system",
             justify="center",
-            foreground="#d97706",      # Amber 600
-            font=("Microsoft YaHei", 9, "bold"),
+            foreground=COLOR_AMBER,
+            font=(FONT_UI, 9, "bold"),
             spacing1=15,
             spacing3=4
         )
         self.chat_display.tag_configure(
             "system_body",
             justify="center",
-            foreground="#4b5563",      # Grey 600
-            background="#fef3c7",      # Amber 100
-            font=("Microsoft YaHei", 9),
-            lmargin1=120,
-            lmargin2=120,
-            rmargin=120,
+            foreground=TEXT_MEDIUM,
+            background=BUBBLE_SYSTEM_BG,
+            font=(FONT_UI, 9),
+            lmargin1=BUBBLE_CENTER_MARGIN,
+            lmargin2=BUBBLE_CENTER_MARGIN,
+            rmargin=BUBBLE_CENTER_MARGIN,
             spacing1=4,
             spacing2=4,
             spacing3=15
@@ -432,8 +481,8 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "thinking_title",
             justify="left",
-            foreground="#71717a",      # Zinc 500
-            font=("Microsoft YaHei", 9, "bold"),
+            foreground=COLOR_ZINC_MID,
+            font=(FONT_UI, 9, "bold"),
             spacing1=15,
             spacing3=4,
             lmargin1=15
@@ -441,12 +490,12 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "thinking",
             justify="left",
-            foreground="#52525b",      # Zinc 600
-            background="#fafafa",      # Zinc 50
-            font=("Microsoft YaHei", 9, "italic"),
+            foreground=COLOR_ZINC_DARK,
+            background=BUBBLE_THINKING_BG,
+            font=(FONT_UI, 9, "italic"),
             lmargin1=15,
             lmargin2=15,
-            rmargin=180,
+            rmargin=BUBBLE_CHAT_MARGIN,
             spacing1=2,
             spacing2=4,
             spacing3=15,
@@ -454,21 +503,21 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.tag_configure(
             "error",
             justify="left",
-            foreground="#ef4444",      # Red 500
-            font=("Microsoft YaHei", 10, "bold"),
+            foreground=COLOR_ERROR,
+            font=(FONT_UI, 10, "bold"),
             spacing1=15,
             lmargin1=15
         )
         self.chat_display.tag_configure(
             "filename",
-            foreground="#7c3aed",      # Violet 600
-            font=("Microsoft YaHei", 9, "underline"),
+            foreground=ACCENT_VIOLET,
+            font=(FONT_UI, 9, "underline"),
             justify="left"
         )
         self.chat_display.tag_configure(
             "info",
-            foreground="#64748b",
-            font=("Microsoft YaHei", 9),
+            foreground=TEXT_LIGHT,
+            font=(FONT_UI, 9),
             lmargin1=15,
             lmargin2=15,
             spacing1=2,
@@ -476,8 +525,8 @@ class ChatLLM_GUI(tk.Tk):
         )
         self.chat_display.tag_configure(
             "prompt",
-            foreground="#0f172a",
-            font=("Microsoft YaHei", 9, "bold"),
+            foreground=TEXT_DARK,
+            font=(FONT_UI, 9, "bold"),
             lmargin1=15,
             lmargin2=15,
             spacing1=2,
@@ -485,8 +534,8 @@ class ChatLLM_GUI(tk.Tk):
         )
         self.chat_display.tag_configure(
             "lyrics",
-            foreground="#475569",
-            font=("Microsoft YaHei", 9, "italic"),
+            foreground=TEXT_MEDIUM,
+            font=(FONT_UI, 9, "italic"),
             lmargin1=15,
             lmargin2=15,
             spacing1=2,
@@ -504,13 +553,13 @@ class ChatLLM_GUI(tk.Tk):
         params_bar = ttk.Frame(input_container, padding=(2, 2))
         params_bar.pack(fill="x", pady=(0, 2))
         
-        self.lbl_aspect = ttk.Label(params_bar, text="图片比例:", font=("Microsoft YaHei", 9))
+        self.lbl_aspect = ttk.Label(params_bar, text="图片比例:", font=(FONT_UI, 9))
         # self.lbl_aspect.pack(side="left", padx=(5, 2))
         self.img_aspect_combo = ttk.Combobox(params_bar, state="readonly", values=["1:1", "16:9", "9:16", "4:3", "3:4", "2:3", "21:9"], width=8)
         self.img_aspect_combo.set("16:9")
         # self.img_aspect_combo.pack(side="left", padx=2)
         
-        self.lbl_n = ttk.Label(params_bar, text="张数:", font=("Microsoft YaHei", 9))
+        self.lbl_n = ttk.Label(params_bar, text="张数:", font=(FONT_UI, 9))
         # self.lbl_n.pack(side="left", padx=(10, 2))
         self.img_n_combo = ttk.Combobox(params_bar, state="readonly", values=["1", "2", "3", "4", "5", "6", "7", "8", "9"], width=6)
         self.img_n_combo.set("1")
@@ -528,7 +577,7 @@ class ChatLLM_GUI(tk.Tk):
         self.btn_clear_attachments = ttk.Button(params_bar, text="清除", command=self.clear_attachments, state="disabled")
         self.btn_clear_attachments.pack(side="right", padx=2)
         
-        self.lbl_attachments = ttk.Label(params_bar, text="未选择附件", foreground="gray", font=("Microsoft YaHei", 9))
+        self.lbl_attachments = ttk.Label(params_bar, text="未选择附件", foreground="gray", font=(FONT_UI, 9))
         self.lbl_attachments.pack(side="right", padx=5)
         
         # (B) Input Text Area
@@ -542,12 +591,12 @@ class ChatLLM_GUI(tk.Tk):
             bd=0, 
             highlightthickness=1, 
             highlightbackground="#e2e8f0",
-            highlightcolor="#3b82f6",
-            font=("Microsoft YaHei", 10),
+            highlightcolor=ACCENT_BLUE,
+            font=(FONT_UI, 10),
             bg="#ffffff",
-            fg="#0f172a",
+            fg=TEXT_DARK,
             selectbackground="#cbd5e1",
-            selectforeground="#1e293b",
+            selectforeground=TEXT_DARK,
             padx=6,
             pady=6
         )
@@ -870,7 +919,7 @@ class ChatLLM_GUI(tk.Tk):
             names_str = ", ".join(names)
             if len(names_str) > 80:
                 names_str = names_str[:77] + "..."
-            self.lbl_attachments.config(text=f"{names_str}  ({len(self.attached_files)}个)", foreground="#722ed1")
+            self.lbl_attachments.config(text=f"{names_str}  ({len(self.attached_files)}个)", foreground=ACCENT_PURPLE)
             self.btn_clear_attachments.config(state="normal")
 
     # ─────────────────────────────────────────────
@@ -925,29 +974,41 @@ class ChatLLM_GUI(tk.Tk):
                         if len(images) > 1 and HAS_PIL:
                             # ── Multiple images: ◀ cards ... ▶ (left/right arrows) ──
                             scroll_container = tk.Frame(self.chat_display, background="#f1f5f9")
-                            
+                            scroll_container.pack(fill="x", expand=True)
+
                             # Outer row: [◀] [canvas] [▶]
                             btn_left = tk.Button(scroll_container, text="◀", font=("Segoe UI", 14, "bold"),
                                                  relief="flat", bg="#f1f5f9", fg="#64748b",
                                                  activebackground="#cbd5e1", cursor="hand2",
                                                  width=2, bd=0)
                             btn_left.pack(side="left", fill="y", expand=False)
-                            
+
                             canvas = tk.Canvas(scroll_container, bg="#f1f5f9",
                                                highlightthickness=0, bd=0, height=160)
                             canvas.pack(side="left", fill="both", expand=True)
-                            
+
                             btn_right = tk.Button(scroll_container, text="▶", font=("Segoe UI", 14, "bold"),
                                                   relief="flat", bg="#f1f5f9", fg="#64748b",
                                                   activebackground="#cbd5e1", cursor="hand2",
                                                   width=2, bd=0)
                             btn_right.pack(side="left", fill="y", expand=False)
+
+                            # Compute canvas width after buttons are rendered
+                            def _layout_and_scroll():
+                                self.update_idletasks()
+                                avail_w = scroll_container.winfo_width()
+                                btn_w = btn_left.winfo_width() + btn_right.winfo_width()
+                                canvas_w = max(avail_w - btn_w, 400)
+                                canvas.config(width=canvas_w, height=160)
+                                canvas.config(scrollregion=canvas.bbox("all"))
+                            self.after(50, _layout_and_scroll)
+                            self.after(300, _layout_and_scroll)
                             
                             # Inner frame inside canvas
                             card_row = tk.Frame(canvas, bg="#f1f5f9")
                             canvas.create_window((0, 0), window=card_row, anchor="nw")
                             
-                            scroll_step = 220
+                            scroll_step = IMAGE_SCROLL_STEP
                             def _scroll_left():
                                 canvas.xview_scroll(-1, "units")
                             def _scroll_right():
@@ -970,22 +1031,22 @@ class ChatLLM_GUI(tk.Tk):
                                 cached_path = img_obj.get("cache_path")
                                 img_label = None
                                 if cached_path and os.path.exists(cached_path):
-                                    img_label = self._make_thumbnail_label(card, cached_path, 130)
+                                    img_label = self._make_thumbnail_label(card, cached_path, THUMBNAIL_CARD_SIZE)
                                 else:
                                     cache_dir = os.path.join(CONV_DIR, "cache")
                                     os.makedirs(cache_dir, exist_ok=True)
                                     cache_name = hashlib.md5(img_url.encode('utf-8')).hexdigest() + img_ext
                                     cache_path_fb = os.path.join(cache_dir, cache_name)
                                     if os.path.exists(cache_path_fb):
-                                        img_label = self._make_thumbnail_label(card, cache_path_fb, 130)
+                                        img_label = self._make_thumbnail_label(card, cache_path_fb, THUMBNAIL_CARD_SIZE)
                                 
                                 if img_label:
                                     img_label.pack(pady=(0, 4))
                                     self._rendered_images.append(img_label._tk_img_ref)
                                 else:
                                     placeholder_lbl = tk.Label(card, text=f"图片 {i+1}\n[加载中…]",
-                                                               bg="#ffffff", fg="#94a3b8",
-                                                               font=("Microsoft YaHei", 9),
+                                                               bg="#ffffff", fg=TEXT_GRAY,
+                                                               font=(FONT_UI, 9),
                                                                width=18, height=6)
                                     placeholder_lbl.pack(pady=(0, 4))
                                     dl_cache_path = os.path.join(
@@ -1000,11 +1061,11 @@ class ChatLLM_GUI(tk.Tk):
                                     dl_thread.start()
                                 
                                 btn_card = tk.Frame(card, background="#ffffff")
-                                tk.Button(btn_card, text="🌐 打开", font=("Microsoft YaHei", 8),
+                                tk.Button(btn_card, text="🌐 打开", font=(FONT_UI, 8),
                                           command=lambda u=img_url: webbrowser.open(u),
                                           cursor="hand2", relief="flat", bg="#f1f5f9",
                                           activebackground="#e2e8f0").pack(side="left", padx=2)
-                                tk.Button(btn_card, text="💾 保存", font=("Microsoft YaHei", 8),
+                                tk.Button(btn_card, text="💾 保存", font=(FONT_UI, 8),
                                           command=lambda u=img_url, dn=img_default_name:
                                               self.download_and_save_file(u, dn, "图片文件 (*.png;*.jpg;*.jpeg)"),
                                           cursor="hand2", relief="flat", bg="#f1f5f9",
@@ -1153,11 +1214,11 @@ class ChatLLM_GUI(tk.Tk):
             # Download if not already cached
             if not os.path.exists(cache_path):
                 try:
-                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_DEFAULT)
                 except requests.exceptions.SSLError:
                     import urllib3
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60, verify=False)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_DEFAULT, verify=False)
                 if r.status_code == 200 and len(r.content) > 0:
                     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                     with open(cache_path, 'wb') as f:
@@ -1171,7 +1232,7 @@ class ChatLLM_GUI(tk.Tk):
     def _replace_card_placeholder(self, card, cache_path, placeholder_lbl):
         """Replace placeholder label with actual thumbnail in card."""
         try:
-            img_lbl = self._make_thumbnail_label(card, cache_path, 130)
+            img_lbl = self._make_thumbnail_label(card, cache_path, THUMBNAIL_CARD_SIZE)
             if img_lbl:
                 placeholder_lbl.pack_forget()
                 img_lbl.pack(pady=(0, 4))
@@ -1181,7 +1242,10 @@ class ChatLLM_GUI(tk.Tk):
     def _force_wide_stretch(self, widget):
         """Force embedded widget to fill the full chat display width."""
         try:
-            # Use Tk's native stretch feature which expands to fill the line
+            self.update_idletasks()
+            cw = self.chat_display.winfo_width()
+            if cw > 1:
+                self.chat_display.window_config(widget, width=cw)
             self.chat_display.window_config(widget, stretch=1)
         except tk.TclError:
             pass
@@ -1192,9 +1256,9 @@ class ChatLLM_GUI(tk.Tk):
                 return
             pil_img = PILImage.open(cache_path)
             w, h = pil_img.size
-            if w > 350:
-                h = int(h * (350 / w))
-                w = 350
+            if w > INLINE_IMAGE_MAX_W:
+                h = int(h * (INLINE_IMAGE_MAX_W / w))
+                w = INLINE_IMAGE_MAX_W
                 resample_filter = getattr(getattr(PILImage, "Resampling", None), "LANCZOS", getattr(PILImage, "LANCZOS", 1))
                 pil_img = pil_img.resize((w, h), resample_filter)
                 
@@ -1209,12 +1273,11 @@ class ChatLLM_GUI(tk.Tk):
     def thread_download_and_render_image_in_chat(self, url, cache_path, placeholder):
         try:
             try:
-                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30)
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_SHORT)
             except requests.exceptions.SSLError:
                 import urllib3
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30, verify=False)
-                
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_SHORT, verify=False)
             if r.status_code == 200:
                 if len(r.content) > 0:
                     with open(cache_path, 'wb') as f:
@@ -1233,9 +1296,9 @@ class ChatLLM_GUI(tk.Tk):
                 return
             pil_img = PILImage.open(cache_path)
             w, h = pil_img.size
-            if w > 350:
-                h = int(h * (350 / w))
-                w = 350
+            if w > INLINE_IMAGE_MAX_W:
+                h = int(h * (INLINE_IMAGE_MAX_W / w))
+                w = INLINE_IMAGE_MAX_W
                 resample_filter = getattr(getattr(PILImage, "Resampling", None), "LANCZOS", getattr(PILImage, "LANCZOS", 1))
                 pil_img = pil_img.resize((w, h), resample_filter)
                 
@@ -1246,6 +1309,7 @@ class ChatLLM_GUI(tk.Tk):
             pos = self.chat_display.search(placeholder, "1.0", tk.END, exact=True)
             if pos:
                 self.chat_display.delete(pos, f"{pos}+{len(placeholder)}c")
+                self.chat_display.image_create(pos, image=tk_img)
                 self.chat_display.image_create(pos, image=tk_img)
             else:
                 self.chat_display.image_create(tk.END, image=tk_img)
@@ -1762,13 +1826,13 @@ class ChatLLM_GUI(tk.Tk):
         y = self.winfo_y() + (self.winfo_height() - 350) // 2
         popup.geometry(f"400x350+{x}+{y}")
         
-        lbl = ttk.Label(popup, text="请输入自定义歌词（不输入则自动生成）：", font=("Microsoft YaHei", 9, "bold"))
+        lbl = ttk.Label(popup, text="请输入自定义歌词（不输入则自动生成）：", font=(FONT_UI, 9, "bold"))
         lbl.pack(anchor="w", padx=10, pady=(10, 5))
         
         text_frame = ttk.Frame(popup)
         text_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        lyric_text = tk.Text(text_frame, wrap="word", font=("Microsoft YaHei", 10), bd=0, highlightthickness=1, highlightbackground="#cbd5e1", highlightcolor="#3b82f6")
+        lyric_text = tk.Text(text_frame, wrap="word", font=(FONT_UI, 10), bd=0, highlightthickness=1, highlightbackground="#cbd5e1", highlightcolor=ACCENT_BLUE)
         lyric_text.pack(side="left", fill="both", expand=True)
         
         scroll = ttk.Scrollbar(text_frame, orient="vertical", command=lyric_text.yview)
@@ -2195,11 +2259,11 @@ class ChatLLM_GUI(tk.Tk):
             try:
                 self.update_status("正在下载并保存文件...")
                 try:
-                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_DEFAULT)
                 except requests.exceptions.SSLError:
                     import urllib3
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60, verify=False)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=DOWNLOAD_TIMEOUT_DEFAULT, verify=False)
                     
                 if r.status_code == 200:
                     with open(file_path, "wb") as f:
