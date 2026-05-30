@@ -377,8 +377,12 @@ def call_minimax_native(model, history, prompt, b64_images, system_prompt):
         "messages": messages
     }
     
-    response = requests.post(url, json=payload, headers=headers, timeout=60)
-    response.raise_for_status()
+    response = requests.post(url, json=payload, headers=headers, timeout=300)
+    if response.status_code != 200:
+        raise requests.exceptions.HTTPError(
+            f"HTTP {response.status_code}: {response.text[:300]}",
+            response=response
+        )
     data = response.json()
     
     try:
@@ -417,6 +421,7 @@ def call_minimax_openai(model, history, prompt, b64_images, system_prompt):
     response = client.chat.completions.create(
         model=model,
         messages=messages,
+        timeout=300,
         extra_body={"reasoning_split": True}
     )
     
@@ -470,7 +475,8 @@ def call_minimax_anthropic(model, history, prompt, b64_images, system_prompt):
     kwargs = {
         "model": model,
         "max_tokens": 2048,
-        "messages": messages
+        "messages": messages,
+        "timeout": 300
     }
     if system_prompt:
         kwargs["system"] = system_prompt

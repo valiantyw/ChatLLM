@@ -6,7 +6,7 @@
 import sys
 sys.dont_write_bytecode = True
 
-import os, json, uuid, base64, threading, mimetypes
+import os, json, base64, threading, mimetypes
 from datetime import datetime
 
 import tkinter as tk
@@ -39,15 +39,20 @@ PDF_EXTS   = {"pdf"}
 VOICE_EXTS = {"mp3", "wav", "ogg", "flac", "aac", "m4a"}
 VIDEO_EXTS = {"mp4", "avi", "mkv", "mov", "flv", "wmv"}
 
-# Conversations storage path
-CONV_DIR = "conversations"
+# Common HTTP headers for downloads
+DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
+# Conversations storage path (absolute path)
+CONV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conversations")
 os.makedirs(CONV_DIR, exist_ok=True)
 
 # Provider & Model configuration options
 PROVIDERS = {
-    "MiniMax (Native)": ["MiniMax-M2.7", "MiniMax-M2.5", "music-2.6", "image-01"],
-    "MiniMax (OpenAI)": ["MiniMax-M2.7", "MiniMax-M2.5", "music-2.6", "image-01"],
-    "MiniMax (Anthropic)": ["MiniMax-M2.7", "MiniMax-M2.5", "music-2.6", "image-01"],
+    "MiniMax (Native)": ["MiniMax-M2.7", "music-2.6", "image-01"],
+    "MiniMax (OpenAI)": ["MiniMax-M2.7", "music-2.6", "image-01"],
+    "MiniMax (Anthropic)": ["MiniMax-M2.7", "music-2.6", "image-01"],
 }
 
 # Default System Prompt
@@ -106,6 +111,8 @@ class ChatLLM_GUI(tk.Tk):
         self.sidebar_visible = True
         self.sidebar_width = 260
         self.custom_lyrics = ""
+        self._is_processing = False  # Guard against concurrent API calls
+        self._loading_flag = False   # Suppress on_session_select during startup
         
         # Configure styles - Use native theme of platform to avoid the retro 'clam' style
         self.style = ttk.Style()
@@ -134,6 +141,9 @@ class ChatLLM_GUI(tk.Tk):
         # Fix taskbar visibility for frameless window on Windows
         if os.name == 'nt':
             self.after(100, self._fix_taskbar)
+            
+        # Save session on window close
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
     def setup_ui(self):
         # ── Custom Title Bar ──────────────────────────
         TB_BG       = "#e2e8f0"   # Clean slate gray titlebar background
@@ -151,7 +161,7 @@ class ChatLLM_GUI(tk.Tk):
         title_lbl.pack(side=tk.LEFT, padx=(8, 0))
 
         # Right: Close / Maximise / Minimise buttons
-        def _close():    self.destroy()
+        def _close():    self._on_close()
         def _minimize():
             self.overrideredirect(False)
             self.state("iconic")
@@ -603,30 +613,68 @@ class ChatLLM_GUI(tk.Tk):
         self.on_model_changed(None)
 
     # ─────────────────────────────────────────────
-    #  Conversation Persistence & Indexing
+    #  Conversation Persistence (no index.json)
     # ─────────────────────────────────────────────
+    @staticmethod
+    def _session_title_from_id(session_id):
+        """Extract display title from session filename (last `-` segment)."""
+        if not session_id:
+            return "新会话"
+        slug = session_id.split("-")[-1]
+        # Bare microsecond IDs are all digits — show "新会话"
+        if slug.isdigit():
+            return "新会话"
+        return slug
+
+    def _rescan_sessions(self):
+        """Scan conversations/*.json, return sorted list of session IDs (newest first
+        based on updated_at / created_at inside the JSON file)."""
+        entries = []
+        if not os.path.isdir(CONV_DIR):
+            return []
+        for fname in os.listdir(CONV_DIR):
+            if fname.endswith(".json") and fname != "index.json":
+                fpath = os.path.join(CONV_DIR, fname)
+                sid = fname[:-5]
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    msgs = data.get("messages") or []
+                    # Skip incomplete sessions (no assistant reply)
+                    if not any(m.get("role") == "assistant" for m in msgs):
+                        os.remove(fpath)
+                        print(f"Removed incomplete session: {fname}")
+                        continue
+                    # Use updated_at if available, fall back to mtime
+                    ts = data.get("updated_at") or data.get("created_at") or ""
+                    entries.append((sid, ts))
+                except Exception:
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
+                    continue
+        # Sort by timestamp descending (newest first).
+        # Timestamps are ISO-8601 strings which sort lexicographically.
+        entries.sort(key=lambda x: x[1], reverse=True)
+        return [sid for sid, _ in entries]
+
     def load_all_sessions(self):
-        self.sessions = []
-        index_path = os.path.join(CONV_DIR, "index.json")
-        if os.path.exists(index_path):
-            try:
-                with open(index_path, "r", encoding="utf-8") as f:
-                    self.sessions = json.load(f)
-            except Exception as e:
-                print(f"Error loading index: {e}")
-                self.sessions = []
+        self._loading_flag = True
+        self.sessions = self._rescan_sessions()
                 
         self.history_listbox.delete(0, tk.END)
-        for s in self.sessions:
-            self.history_listbox.insert(tk.END, s.get("title", "未命名会话"))
+        for sid in self.sessions:
+            self.history_listbox.insert(tk.END, self._session_title_from_id(sid))
             
         if self.sessions:
-            # Select the first session by default
             self.history_listbox.selection_set(0)
-            self.current_session_id = self.sessions[0]["id"]
+            self.current_session_id = self.sessions[0]
             self.load_session_by_id(self.current_session_id)
         else:
             self.new_session()
+            
+        self._loading_flag = False
 
     def load_session_by_id(self, session_id):
         self.current_session_id = session_id
@@ -663,11 +711,7 @@ class ChatLLM_GUI(tk.Tk):
         self.system_text.insert("1.0", system_prompt)
         
         # Update session title label
-        title = "未命名会话"
-        for s in self.sessions:
-            if s["id"] == session_id:
-                title = s.get("title", "未命名会话")
-                break
+        title = self._session_title_from_id(session_id)
         if hasattr(self, 'lbl_session_title'):
             self.lbl_session_title.config(text=title)
             
@@ -698,21 +742,13 @@ class ChatLLM_GUI(tk.Tk):
         except Exception as e:
             print(f"Error writing session file: {e}")
 
-    def save_index(self):
-        index_path = os.path.join(CONV_DIR, "index.json")
-        try:
-            with open(index_path, "w", encoding="utf-8") as f:
-                json.dump(self.sessions, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error writing index: {e}")
-
     def refresh_listbox_titles(self):
         selection = self.history_listbox.curselection()
         selected_idx = selection[0] if selection else None
         
         self.history_listbox.delete(0, tk.END)
-        for s in self.sessions:
-            self.history_listbox.insert(tk.END, s.get("title", "未命名会话"))
+        for sid in self.sessions:
+            self.history_listbox.insert(tk.END, self._session_title_from_id(sid))
             
         if selected_idx is not None and selected_idx < len(self.sessions):
             self.history_listbox.selection_set(selected_idx)
@@ -721,29 +757,27 @@ class ChatLLM_GUI(tk.Tk):
     # ─────────────────────────────────────────────
     def new_session(self):
         if self.current_session_id:
-            self.save_session_by_id(self.current_session_id)
+            # Only save old session if it has an AI response
+            has_assistant = any(m.get("role") == "assistant" for m in self.current_messages)
+            if has_assistant:
+                self.save_session_by_id(self.current_session_id)
             
-        new_id = str(uuid.uuid4())
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        title = f"新会话 - {now_str}"
+        new_id = datetime.now().strftime("%Y-%m-%d-%H%M%S-%f")
+        title = "新会话"
         
-        new_meta = {
-            "id": new_id,
-            "title": title,
-            "provider": "MiniMax (Native)",
-            "model": "MiniMax-M2.7",
-            "system_prompt": DEFAULT_SYSTEM_PROMPT,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
+        # Reset state for new session
+        self.current_session_id = new_id
+        self.current_messages = []
         
-        self.sessions.insert(0, new_meta)
-        self.save_index()
+        # Update UI
+        if hasattr(self, 'lbl_session_title'):
+            self.lbl_session_title.config(text=title)
+        if hasattr(self, 'chat_display'):
+            self.chat_display.config(state="normal")
+            self.chat_display.delete("1.0", tk.END)
+            self.chat_display.config(state="disabled")
         
-        self.refresh_listbox_titles()
-        self.history_listbox.selection_set(0)
-        self.load_session_by_id(new_id)
-        self.update_status("新建会话成功。")
+        self.update_status("新建会话成功，请输入内容。")
 
     def delete_session(self):
         selection = self.history_listbox.curselection()
@@ -752,14 +786,13 @@ class ChatLLM_GUI(tk.Tk):
             return
             
         idx = selection[0]
-        target_session = self.sessions[idx]
-        session_id = target_session["id"]
+        session_id = self.sessions[idx]
+        title = self._session_title_from_id(session_id)
         
-        if not messagebox.askyesno("删除会话", f"确定删除会话 「{target_session.get('title')}」 吗？此操作不可恢复。"):
+        if not messagebox.askyesno("删除会话", f"确定删除会话 「{title}」 吗？此操作不可恢复。"):
             return
             
         self.sessions.pop(idx)
-        self.save_index()
         
         filepath = os.path.join(CONV_DIR, f"{session_id}.json")
         if os.path.exists(filepath):
@@ -776,19 +809,21 @@ class ChatLLM_GUI(tk.Tk):
         
         if self.sessions:
             self.history_listbox.selection_set(0)
-            self.load_session_by_id(self.sessions[0]["id"])
+            self.load_session_by_id(self.sessions[0])
         else:
             self.new_session()
             
         self.update_status("会话已成功删除。")
 
     def on_session_select(self, event):
+        if self._loading_flag:
+            return
         selection = self.history_listbox.curselection()
         if not selection:
             return
             
         idx = selection[0]
-        selected_id = self.sessions[idx]["id"]
+        selected_id = self.sessions[idx]
         
         if selected_id == self.current_session_id:
             return
@@ -834,8 +869,7 @@ class ChatLLM_GUI(tk.Tk):
             names = [os.path.basename(p) for p in self.attached_files]
             names_str = ", ".join(names)
             if len(names_str) > 80:
-                name, ext = os.path.splitext(names_str)
-                names_str = name[:70] + "..." + name[-3:] + ext
+                names_str = names_str[:77] + "..."
             self.lbl_attachments.config(text=f"{names_str}  ({len(self.attached_files)}个)", foreground="#722ed1")
             self.btn_clear_attachments.config(state="normal")
 
@@ -875,55 +909,171 @@ class ChatLLM_GUI(tk.Tk):
                     
                 elif msg_type == "image":
                     self.chat_display.insert(tk.END, f"🎨 AI绘画\n", "assistant")
-                    info_text = f"提示词: {msg.get('prompt', '')}\n长宽比: {msg.get('aspect_ratio', '16:9')} | 数量: {msg.get('n', 1)}\n"
+                    info_text = f"提示词: {msg.get('prompt', '')}\n长宽比: {msg.get('aspect_ratio', '16:9')} | 数量: {msg.get('n', 1)}"
                     self.chat_display.insert(tk.END, info_text, "assistant_body")
+                    self.chat_display.insert(tk.END, "\n", ())  # empty tuple = NO tag, starts clean line
                     
                     images = msg.get("images", [])
                     if not images:
                         self.chat_display.insert(tk.END, "[未获取到图片链接]\n\n", "error")
                     else:
-                        for i, img_obj in enumerate(images):
-                            img_url = img_obj.get("url", "")
-                            self.chat_display.insert(tk.END, f"\n图片 {i+1}:\n", "info")
+                        # Prepare short title for filename use
+                        img_short_title = msg.get("short_title", "")
+                        img_safe_title = self._sanitize_filename(img_short_title) if img_short_title else "image"
+                        img_ts = datetime.now().strftime("%m%d-%H%M%S")
+                        
+                        if len(images) > 1 and HAS_PIL:
+                            # ── Multiple images: ◀ cards ... ▶ (left/right arrows) ──
+                            scroll_container = tk.Frame(self.chat_display, background="#f1f5f9")
                             
-                            # Create a nice button frame for inline actions
-                            btn_frame = tk.Frame(self.chat_display, background="#f1f5f9")
-                            btn_open = ttk.Button(btn_frame, text="浏览器打开", command=lambda url=img_url: webbrowser.open(url))
-                            btn_open.pack(side="left", padx=5, pady=2)
+                            # Outer row: [◀] [canvas] [▶]
+                            btn_left = tk.Button(scroll_container, text="◀", font=("Segoe UI", 14, "bold"),
+                                                 relief="flat", bg="#f1f5f9", fg="#64748b",
+                                                 activebackground="#cbd5e1", cursor="hand2",
+                                                 width=2, bd=0)
+                            btn_left.pack(side="left", fill="y", expand=False)
                             
-                            btn_save = ttk.Button(btn_frame, text="保存图片", command=lambda url=img_url, idx=i: self.download_and_save_file(url, f"image_{idx+1}.png", "图片文件 (*.png;*.jpg;*.jpeg)"))
-                            btn_save.pack(side="left", padx=5, pady=2)
+                            canvas = tk.Canvas(scroll_container, bg="#f1f5f9",
+                                               highlightthickness=0, bd=0, height=160)
+                            canvas.pack(side="left", fill="both", expand=True)
                             
-                            self.chat_display.window_create(tk.END, window=btn_frame)
-                            self.chat_display.insert(tk.END, "\n")
+                            btn_right = tk.Button(scroll_container, text="▶", font=("Segoe UI", 14, "bold"),
+                                                  relief="flat", bg="#f1f5f9", fg="#64748b",
+                                                  activebackground="#cbd5e1", cursor="hand2",
+                                                  width=2, bd=0)
+                            btn_right.pack(side="left", fill="y", expand=False)
                             
-                            # Handle caching and displaying inline image in chat
-                            if HAS_PIL:
-                                cache_dir = os.path.join(CONV_DIR, "cache")
-                                os.makedirs(cache_dir, exist_ok=True)
-                                cache_name = hashlib.md5(img_url.encode('utf-8')).hexdigest() + ".png"
-                                cache_path = os.path.join(cache_dir, cache_name)
+                            # Inner frame inside canvas
+                            card_row = tk.Frame(canvas, bg="#f1f5f9")
+                            canvas.create_window((0, 0), window=card_row, anchor="nw")
+                            
+                            scroll_step = 220
+                            def _scroll_left():
+                                canvas.xview_scroll(-1, "units")
+                            def _scroll_right():
+                                canvas.xview_scroll(1, "units")
+                            
+                            def _on_card_row_configure(event):
+                                canvas.config(scrollregion=canvas.bbox("all"))
+                            card_row.bind("<Configure>", _on_card_row_configure)
+                            
+                            # Populate cards
+                            for i, img_obj in enumerate(images):
+                                img_url = img_obj.get("url", "")
+                                img_ext = self._get_url_extension(img_url, ".png")
+                                img_default_name = f"{img_ts}-{img_safe_title}{img_ext}"
                                 
-                                is_valid = False
-                                if os.path.exists(cache_path):
-                                    try:
-                                        with PILImage.open(cache_path) as test_img:
-                                            test_img.verify()
-                                        is_valid = True
-                                    except Exception:
-                                        try:
-                                            os.remove(cache_path)
-                                        except Exception:
-                                            pass
-                                            
-                                if is_valid:
-                                    self.display_cached_image_in_chat(cache_path)
+                                card = tk.Frame(card_row, background="#ffffff",
+                                                highlightbackground="#e2e8f0",
+                                                highlightthickness=1, padx=4, pady=4)
+                                
+                                cached_path = img_obj.get("cache_path")
+                                img_label = None
+                                if cached_path and os.path.exists(cached_path):
+                                    img_label = self._make_thumbnail_label(card, cached_path, 130)
                                 else:
-                                    placeholder = f"[正在下载并渲染图片 {i+1} ({cache_name[:8]})...]"
-                                    self.chat_display.insert(tk.END, placeholder + "\n", "info")
-                                    t = threading.Thread(target=self.thread_download_and_render_image_in_chat, args=(img_url, cache_path, placeholder))
-                                    t.daemon = True
-                                    t.start()
+                                    cache_dir = os.path.join(CONV_DIR, "cache")
+                                    os.makedirs(cache_dir, exist_ok=True)
+                                    cache_name = hashlib.md5(img_url.encode('utf-8')).hexdigest() + img_ext
+                                    cache_path_fb = os.path.join(cache_dir, cache_name)
+                                    if os.path.exists(cache_path_fb):
+                                        img_label = self._make_thumbnail_label(card, cache_path_fb, 130)
+                                
+                                if img_label:
+                                    img_label.pack(pady=(0, 4))
+                                    self._rendered_images.append(img_label._tk_img_ref)
+                                else:
+                                    placeholder_lbl = tk.Label(card, text=f"图片 {i+1}\n[加载中…]",
+                                                               bg="#ffffff", fg="#94a3b8",
+                                                               font=("Microsoft YaHei", 9),
+                                                               width=18, height=6)
+                                    placeholder_lbl.pack(pady=(0, 4))
+                                    dl_cache_path = os.path.join(
+                                        os.path.join(CONV_DIR, "cache"),
+                                        hashlib.md5(img_url.encode('utf-8')).hexdigest() + img_ext
+                                    )
+                                    dl_thread = threading.Thread(
+                                        target=self._thread_download_and_update_card,
+                                        args=(img_url, dl_cache_path, card, placeholder_lbl)
+                                    )
+                                    dl_thread.daemon = True
+                                    dl_thread.start()
+                                
+                                btn_card = tk.Frame(card, background="#ffffff")
+                                tk.Button(btn_card, text="🌐 打开", font=("Microsoft YaHei", 8),
+                                          command=lambda u=img_url: webbrowser.open(u),
+                                          cursor="hand2", relief="flat", bg="#f1f5f9",
+                                          activebackground="#e2e8f0").pack(side="left", padx=2)
+                                tk.Button(btn_card, text="💾 保存", font=("Microsoft YaHei", 8),
+                                          command=lambda u=img_url, dn=img_default_name:
+                                              self.download_and_save_file(u, dn, "图片文件 (*.png;*.jpg;*.jpeg)"),
+                                          cursor="hand2", relief="flat", bg="#f1f5f9",
+                                          activebackground="#e2e8f0").pack(side="left", padx=2)
+                                btn_card.pack()
+                                
+                                card.pack(side="left", padx=6, pady=4)
+                            
+                            btn_left.config(command=_scroll_left)
+                            btn_right.config(command=_scroll_right)
+                            
+                            # Embed and force-stretch to fill the entire chat width
+                            self.chat_display.window_create(tk.END, window=scroll_container)
+                            self.chat_display.insert(tk.END, "\n")
+                            # Retry with increasing delays to catch layout completion
+                            for delay in (50, 300):
+                                self.after(delay, lambda w=scroll_container: self._force_wide_stretch(w))
+                        else:
+                            # ── Single image: vertical layout (existing) ──
+                            for i, img_obj in enumerate(images):
+                                img_url = img_obj.get("url", "")
+                                img_ext = self._get_url_extension(img_url, ".png")
+                                self.chat_display.insert(tk.END, f"\n图片 {i+1}:\n", "info")
+                                
+                                btn_frame = tk.Frame(self.chat_display, background="#f1f5f9")
+                                btn_open = ttk.Button(btn_frame, text="浏览器打开", command=lambda url=img_url: webbrowser.open(url))
+                                btn_open.pack(side="left", padx=5, pady=2)
+                                
+                                img_default_name = f"{img_ts}-{img_safe_title}{img_ext}"
+                                btn_save = ttk.Button(btn_frame, text="保存图片", command=lambda url=img_url, dn=img_default_name: self.download_and_save_file(url, dn, "图片文件 (*.png;*.jpg;*.jpeg)"))
+                                btn_save.pack(side="left", padx=5, pady=2)
+                                
+                                self.chat_display.window_create(tk.END, window=btn_frame)
+                                self.chat_display.insert(tk.END, "\n")
+                                
+                                # Handle caching and displaying inline image in chat
+                                if HAS_PIL:
+                                    cache_dir = os.path.join(CONV_DIR, "cache")
+                                    os.makedirs(cache_dir, exist_ok=True)
+                                    img_ext = self._get_url_extension(img_url, ".png")
+                                    cache_name = hashlib.md5(img_url.encode('utf-8')).hexdigest() + img_ext
+                                    cache_path = os.path.join(cache_dir, cache_name)
+                                    
+                                    # Prefer existing cache_path stored by handle_image_success
+                                    cached_path = img_obj.get("cache_path")
+                                    if cached_path and os.path.exists(cached_path):
+                                        self.display_cached_image_in_chat(cached_path)
+                                        continue
+                                    
+                                    is_valid = False
+                                    if os.path.exists(cache_path):
+                                        try:
+                                            with PILImage.open(cache_path) as test_img:
+                                                test_img.verify()
+                                            is_valid = True
+                                        except Exception:
+                                            try:
+                                                os.remove(cache_path)
+                                            except Exception:
+                                                pass
+                                                    
+                                    if is_valid:
+                                        self.display_cached_image_in_chat(cache_path)
+                                    else:
+                                        placeholder = f"[正在下载并渲染图片 {i+1} ({cache_name[:8]})...]"
+                                        self.chat_display.insert(tk.END, placeholder + "\n", "info")
+                                        t = threading.Thread(target=self.thread_download_and_render_image_in_chat, args=(img_url, cache_path, placeholder))
+                                        t.daemon = True
+                                        t.start()
                                     
                 elif msg_type == "music_loading":
                     self.chat_display.insert(tk.END, f"🎵 AI 音乐生成中...\n", "assistant")
@@ -944,11 +1094,17 @@ class ChatLLM_GUI(tk.Tk):
                     if not audio_url:
                         self.chat_display.insert(tk.END, "[生成失败或音频数据为空]\n\n", "error")
                     else:
+                        audio_ext = self._get_url_extension(audio_url, ".mp3")
+                        audio_short_title = msg.get("short_title", "")
+                        audio_safe_title = self._sanitize_filename(audio_short_title) if audio_short_title else "music"
+                        audio_ts = datetime.now().strftime("%m%d-%H%M%S")
+                        audio_default_name = f"{audio_ts}-{audio_safe_title}{audio_ext}"
+                        
                         btn_frame = tk.Frame(self.chat_display, background="#f1f5f9")
                         btn_open = ttk.Button(btn_frame, text="浏览器播放/下载", command=lambda url=audio_url: webbrowser.open(url))
                         btn_open.pack(side="left", padx=5, pady=2)
                         
-                        btn_save = ttk.Button(btn_frame, text="保存音频文件", command=lambda url=audio_url: self.download_and_save_file(url, "song.mp3", "音频文件 (*.mp3;*.wav)"))
+                        btn_save = ttk.Button(btn_frame, text="保存音频文件", command=lambda url=audio_url, dn=audio_default_name: self.download_and_save_file(url, dn, f"音频文件 (*{audio_ext};*.mp3)"))
                         btn_save.pack(side="left", padx=5, pady=2)
                         
                         self.chat_display.window_create(tk.END, window=btn_frame)
@@ -960,6 +1116,76 @@ class ChatLLM_GUI(tk.Tk):
                 
         self.chat_display.config(state="disabled")
         self.chat_display.see(tk.END)
+
+    def _make_thumbnail_label(self, parent, cache_path, max_w=200):
+        """Create a tk.Label with a fitted thumbnail from a cached image."""
+        try:
+            if not HAS_PIL:
+                return None
+            pil_img = PILImage.open(cache_path)
+            w, h = pil_img.size
+            if w > max_w:
+                h = int(h * (max_w / w))
+                w = max_w
+            resample = getattr(getattr(PILImage, "Resampling", None), "LANCZOS",
+                               getattr(PILImage, "LANCZOS", 1))
+            pil_img = pil_img.resize((w, h), resample)
+            tk_img = ImageTk.PhotoImage(pil_img)
+            lbl = tk.Label(parent, image=tk_img, bg="#ffffff")
+            # Keep a reference so the image is not garbage-collected
+            lbl._tk_img_ref = tk_img
+            self._rendered_images.append(tk_img)
+            return lbl
+        except Exception as e:
+            print(f"Error making thumbnail: {e}")
+            return None
+
+    def _thread_download_and_update_card(self, url, cache_path, card, placeholder_lbl):
+        """Download image and replace placeholder label with thumbnail."""
+        try:
+            if cache_path is None:
+                cache_dir = os.path.join(CONV_DIR, "cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                ext = self._get_url_extension(url, ".png")
+                cache_name = hashlib.md5(url.encode('utf-8')).hexdigest() + ext
+                cache_path = os.path.join(cache_dir, cache_name)
+            
+            # Download if not already cached
+            if not os.path.exists(cache_path):
+                try:
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60)
+                except requests.exceptions.SSLError:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60, verify=False)
+                if r.status_code == 200 and len(r.content) > 0:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    with open(cache_path, 'wb') as f:
+                        f.write(r.content)
+            
+            if os.path.exists(cache_path):
+                self.after(0, self._replace_card_placeholder, card, cache_path, placeholder_lbl)
+        except Exception as e:
+            print(f"Error downloading image for card: {e}")
+
+    def _replace_card_placeholder(self, card, cache_path, placeholder_lbl):
+        """Replace placeholder label with actual thumbnail in card."""
+        try:
+            img_lbl = self._make_thumbnail_label(card, cache_path, 130)
+            if img_lbl:
+                placeholder_lbl.pack_forget()
+                img_lbl.pack(pady=(0, 4))
+        except Exception as e:
+            print(f"Error replacing card placeholder: {e}")
+
+    def _force_wide_stretch(self, widget):
+        """Force embedded widget to fill the full chat display width."""
+        try:
+            # Use Tk's native stretch feature which expands to fill the line
+            self.chat_display.window_config(widget, stretch=1)
+        except tk.TclError:
+            pass
+
     def display_cached_image_in_chat(self, cache_path):
         try:
             if not HAS_PIL:
@@ -982,15 +1208,12 @@ class ChatLLM_GUI(tk.Tk):
 
     def thread_download_and_render_image_in_chat(self, url, cache_path, placeholder):
         try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
             try:
-                r = requests.get(url, headers=headers, timeout=30)
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30)
             except requests.exceptions.SSLError:
                 import urllib3
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                r = requests.get(url, headers=headers, timeout=30, verify=False)
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30, verify=False)
                 
             if r.status_code == 200:
                 if len(r.content) > 0:
@@ -1046,6 +1269,136 @@ class ChatLLM_GUI(tk.Tk):
     # ─────────────────────────────────────────────
     #  Input Hotkeys
     # ─────────────────────────────────────────────
+    # ─────────────────────────────────────────────
+    #  Unified Session Management
+    # ─────────────────────────────────────────────
+    def _async_ai_short_title(self, prompt, msg_idx):
+        """Call LLM in background to generate a ≤10 char description from prompt."""
+        try:
+            ai_prompt = (
+                f"请用最多10个汉字概括以下内容的核心主题（只输出概括文字，不要标点、引号、多余字）：{prompt}"
+            )
+            desc, _ = call_minimax_native(
+                model="MiniMax-M2.7",
+                history=[],
+                prompt=ai_prompt,
+                b64_images=[],
+                system_prompt="你是一个简洁的摘要工具，只输出10字以内的核心概括，不输出任何其他文字。"
+            )
+            short = desc.strip().strip('"').strip("'").strip('「」『』（）【】') if desc else ""
+            short = short[:10].replace("\n", "").replace("\r", "")
+            if short:
+                self.after(0, self._update_msg_short_title, msg_idx, short)
+        except Exception as e:
+            print(f"AI short title generation failed: {e}")
+
+    def _update_msg_short_title(self, msg_idx, short_title):
+        """Update short_title in a message (thread-safe, called from main thread)."""
+        if 0 <= msg_idx < len(self.current_messages):
+            self.current_messages[msg_idx]["short_title"] = short_title
+            self.refresh_chat_display()
+
+    def _ensure_current_session(self):
+        """Ensure a current session exists, create new one if needed."""
+        print(f"[DEBUG] _ensure_current_session: current_session_id={self.current_session_id}")
+        if not self.current_session_id:
+            self.new_session()
+            print(f"[DEBUG] _ensure_current_session: created new session, current_session_id={self.current_session_id}")
+
+    def _generate_short_title(self, text, max_len=9):
+        """Generate a short title (max_len chars) from text for use in filename."""
+        import re
+        # Take first line, remove extra whitespace
+        title = text.split("\n")[0].strip()
+        
+        # Remove common prefixes for clean titles
+        prefixes_to_remove = [
+            r'^生成音乐[:：]\s*',
+            r'^生成图片[:：]\s*".*?"\s*',  # Must come before simple prefix to match quoted prompts
+            r'^生成图片[:：]\s*',
+        ]
+        for prefix in prefixes_to_remove:
+            title = re.sub(prefix, '', title)
+        
+        # Remove content in parentheses like (比例: 16:9, 数量: 1)
+        title = re.sub(r'\s*\(比例[:：]\s*[^)]+\)\s*', '', title)
+        
+        # Remove quotes
+        title = title.replace('"', '').replace('"', '').replace("'", "")
+        
+        # Remove extra spaces
+        title = " ".join(title.split())
+        
+        if len(title) > max_len:
+            title = title[:max_len]
+        return title
+
+    def _sanitize_filename(self, text):
+        """Remove/replace characters invalid in filenames."""
+        # Remove chars invalid in Windows filenames: \ / : * ? " < > |
+        for ch in '\\/:*?"<>|':
+            text = text.replace(ch, "_")
+        # Replace spaces with underscores
+        text = text.replace(" ", "_")
+        return text
+
+    def _get_url_extension(self, url, default_ext="png"):
+        """Extract file extension from URL, return default if not found."""
+        import re
+        # Try to find extension pattern like .jpg, .jpeg, .png, .mp3, .wav, etc.
+        match = re.search(r'(\.[a-zA-Z0-9]+)(?:\?|$)', url)
+        if match:
+            ext = match.group(1).lower()
+            # Normalize common extensions
+            if ext in ['.jpeg', '.jpg']:
+                return '.jpg'  # Standardize to .jpg
+            return ext
+        return default_ext
+
+    def _download_to_cache(self, url, custom_name=None, timeout=60):
+        """Download file from URL and save to cache directory. Returns cache path or None.
+        
+        Args:
+            url: URL of the file to download
+            custom_name: Optional custom name for the file. If provided, filename format is MM-DD-HHMMSS-custom_name.ext
+                       If None, uses MD5 hash of URL as filename.
+            timeout: Request timeout in seconds (default 60, use 120 for larger audio files)
+        """
+        try:
+            cache_dir = os.path.join(CONV_DIR, "cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            ext = self._get_url_extension(url, ".png")
+            
+            if custom_name:
+                # Sanitize custom_name for use in filename
+                safe_name = self._sanitize_filename(custom_name)
+                # Format: MM-DD-HHMMSS-custom_name.ext
+                timestamp_str = datetime.now().strftime("%m-%d-%H%M%S")
+                cache_name = f"{timestamp_str}-{safe_name}{ext}"
+            else:
+                cache_name = hashlib.md5(url.encode('utf-8')).hexdigest() + ext
+            
+            cache_path = os.path.join(cache_dir, cache_name)
+            
+            if os.path.exists(cache_path):
+                return cache_path
+            
+            try:
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=timeout)
+            except requests.exceptions.SSLError:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=timeout, verify=False)
+                
+            if r.status_code == 200 and len(r.content) > 0:
+                with open(cache_path, 'wb') as f:
+                    f.write(r.content)
+                return cache_path
+        except Exception as e:
+            print(f"Error downloading to cache: {e}")
+        return None
+
     def on_enter_pressed(self, event):
         model = self.model_combo.get()
         if model == "music-2.6":
@@ -1068,6 +1421,7 @@ class ChatLLM_GUI(tk.Tk):
         self.btn_add_file.config(state=state)
         if hasattr(self, 'btn_send'): self.btn_send.config(state=state)
         if hasattr(self, 'input_text'): self.input_text.config(state="normal" if state == "normal" else "disabled")
+        self._is_processing = (state != "normal")
 
     def update_status(self, text):
         self.status_bar.config(text=text)
@@ -1076,6 +1430,9 @@ class ChatLLM_GUI(tk.Tk):
     #  SendMessage Execution Flow
     # ─────────────────────────────────────────────
     def send_message(self):
+        if self._is_processing:
+            return
+
         model = self.model_combo.get()
         if model == "music-2.6":
             self.generate_music()
@@ -1089,8 +1446,7 @@ class ChatLLM_GUI(tk.Tk):
         if not user_text and not self.attached_files:
             return
             
-        if not self.current_session_id:
-            self.new_session()
+        self._ensure_current_session()
             
         text_attachments = []
         b64_images = []
@@ -1133,6 +1489,9 @@ class ChatLLM_GUI(tk.Tk):
         
         self.current_messages.append(user_msg)
         self.refresh_chat_display()
+        
+        # Save session immediately with user's request as title
+        self._save_session_on_user_request(display_content, model)
         
         # Clear fields
         self.input_text.delete("1.0", tk.END)
@@ -1182,12 +1541,90 @@ class ChatLLM_GUI(tk.Tk):
             import traceback
             traceback.print_exc()
             success = False
+            
+            # Clean error message for display
             error_msg = str(e)
+            # Truncate if too long
+            if len(error_msg) > 200:
+                error_msg = error_msg[:200] + "..."
+            
+            # Handle specific request exceptions
+            import requests.exceptions
+            if isinstance(e, requests.exceptions.ReadTimeout):
+                error_msg = f"API 请求超时 (ReadTimeout) - 服务器响应过慢，请重试"
+            elif isinstance(e, requests.exceptions.ConnectionError):
+                error_msg = f"网络连接错误 (ConnectionError) - 请检查网络连接"
+            elif isinstance(e, requests.exceptions.HTTPError):
+                # Show the actual response text from the API
+                resp_text = str(e)
+                if len(resp_text) > 200:
+                    resp_text = resp_text[:200] + "..."
+                error_msg = f"API HTTP 错误: {resp_text}"
+            elif isinstance(e, requests.exceptions.RequestException):
+                error_msg = f"API 请求错误: {str(e)[:200]}"
             
         if success:
             self.after(0, self.handle_api_response, text_result, thinking_result)
         else:
             self.after(0, self.handle_api_error, error_msg)
+
+    # ─────────────────────────────────────────────
+    #  Immediate Session Save on User Request
+    # ─────────────────────────────────────────────
+    def _save_session_on_user_request(self, user_content, model):
+        """Save session immediately when user sends a request (before AI replies).
+        
+        Generates title from user content, creates the final filename,
+        writes the session file, and updates the sidebar list.
+        """
+        self._ensure_current_session()
+        
+        first_line = user_content.split("\n")[0].strip() if user_content else ""
+        if not first_line:
+            return
+        
+        # Compute final file ID (timestamp + slug from first line)
+        slug = self._generate_short_title(first_line, max_len=10)
+        safe_slug = self._sanitize_filename(slug)
+        current_id = self.current_session_id
+        if safe_slug and safe_slug != "_":
+            ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            final_id = f"{ts}-{safe_slug}"
+            # Clean up any old file with bare ID
+            old_path = os.path.join(CONV_DIR, f"{current_id}.json")
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
+            self.current_session_id = final_id
+        else:
+            final_id = current_id
+        
+        # Update sidebar: add to front of sessions list
+        if final_id not in self.sessions:
+            self.sessions.insert(0, final_id)
+        self.refresh_listbox_titles()
+        
+        # Sidebar label from slug
+        title = self._session_title_from_id(final_id)
+        if hasattr(self, "lbl_session_title"):
+            self.lbl_session_title.config(text=title)
+        
+        # Save session data to disk
+        self.save_session_by_id(self.current_session_id)
+
+    # ─────────────────────────────────────────────
+    #  Shared Session Registration & Rename
+    # ─────────────────────────────────────────────
+    def _register_and_rename_session(self, model):
+        """Persist the newly added assistant message after first response."""
+        if not self.current_messages:
+            return
+        
+        # Session title and file name are already set by _save_session_on_user_request.
+        # Do NOT update them in subsequent rounds.
+        self.save_session_by_id(self.current_session_id)
 
     # ─────────────────────────────────────────────
     #  LLM API Clients Dispatch
@@ -1203,39 +1640,28 @@ class ChatLLM_GUI(tk.Tk):
         }
         self.current_messages.append(asst_msg)
         
-        # Dynamically set session title if first round
-        if len(self.current_messages) <= 2:
-            first_user_msg = self.current_messages[0]["content"].split("\n")[0]
-            if len(first_user_msg) > 15:
-                first_user_msg = first_user_msg[:12] + "..."
-            for s in self.sessions:
-                if s["id"] == self.current_session_id:
-                    s["title"] = first_user_msg
-                    break
-            self.save_index()
-            self.refresh_listbox_titles()
-            
-        if hasattr(self, "lbl_session_title") and len(self.current_messages) > 0:
-            first_user_msg = self.current_messages[0]["content"].split("\n")[0]
-            if len(first_user_msg) > 15:
-                first_user_msg = first_user_msg[:12] + "..."
-            self.lbl_session_title.config(text=first_user_msg)
+        self._register_and_rename_session(model)
 
-        self.save_session_by_id(self.current_session_id)
         self.refresh_chat_display()
         
         self.set_controls_state("normal")
         self.update_status("准备就绪")
 
     def handle_api_error(self, error_message):
-        self.chat_display.config(state="normal")
-        self.chat_display.insert(tk.END, "错误信息:\n", "error")
-        self.chat_display.insert(tk.END, f"调用大模型API失败: {error_message}\n\n")
-        self.chat_display.config(state="disabled")
-        self.chat_display.see(tk.END)
-        
-        self.set_controls_state("normal")
-        self.update_status(f" 错误: {error_message}")
+        try:
+            self.chat_display.config(state="normal")
+            self.chat_display.insert(tk.END, "错误信息:\n", "error")
+            self.chat_display.insert(tk.END, f"调用大模型API失败: {error_message}\n\n")
+            self.chat_display.config(state="disabled")
+            self.chat_display.see(tk.END)
+            
+            self.set_controls_state("normal")
+            self.update_status(f"错误: {error_message[:50]}...")
+        except Exception as e:
+            # Fallback error handling if UI update fails
+            print(f"Error displaying API error: {e}")
+            self.set_controls_state("normal")
+            self.update_status(f"API 调用失败: {error_message[:30]}...")
 
     # ─────────────────────────────────────────────
     #  Model selection handlers & Overrides
@@ -1251,11 +1677,9 @@ class ChatLLM_GUI(tk.Tk):
         if hasattr(self, 'lbl_n'): self.lbl_n.pack_forget()
         if hasattr(self, 'img_n_combo'): self.img_n_combo.pack_forget()
         if hasattr(self, 'btn_edit_lyrics'): self.btn_edit_lyrics.pack_forget()
-        if hasattr(self, 'lyrics_hint_lbl'): self.lyrics_hint_lbl.pack_forget()
         
         if model == "music-2.6":
             # Show music specific options
-            if hasattr(self, 'lyrics_hint_lbl'): self.lyrics_hint_lbl.pack(side="left", padx=(5, 2))
             if hasattr(self, 'btn_edit_lyrics'): self.btn_edit_lyrics.pack(side="left", padx=(15, 2))
                 
         elif model == "image-01":
@@ -1381,6 +1805,9 @@ class ChatLLM_GUI(tk.Tk):
     #  AI Image Generation
     # ─────────────────────────────────────────────
     def generate_image(self):
+        if self._is_processing:
+            return
+
         prompt = self.input_text.get("1.0", tk.END).strip()
         if not prompt:
             messagebox.showwarning("警告", "请先在输入框中输入图片生成提示词！")
@@ -1404,9 +1831,8 @@ class ChatLLM_GUI(tk.Tk):
         # Clear main input text
         self.input_text.delete("1.0", tk.END)
         
-        if not self.current_session_id:
-            self.new_session()
-            
+        self._ensure_current_session()
+        
         # Log the user's action
         user_msg = {
             "role": "user",
@@ -1427,6 +1853,9 @@ class ChatLLM_GUI(tk.Tk):
         self.current_messages.append(loading_msg)
         self.refresh_chat_display()
         
+        # Save session immediately with user's request as title
+        self._save_session_on_user_request(f"生成图片: {prompt}", model)
+        
         self.set_controls_state("disabled")
         self.update_status("正在生成图片，请稍候...")
         
@@ -1437,7 +1866,6 @@ class ChatLLM_GUI(tk.Tk):
     def thread_generate_image(self, prompt, model, aspect_ratio, n, prompt_optimizer, ref_path):
         subject_reference = None
         try:
-            from providers import image_MiniMax
             result = image_MiniMax(
                 prompt=prompt,
                 model=model,
@@ -1489,7 +1917,19 @@ class ChatLLM_GUI(tk.Tk):
 
     def handle_image_success(self, prompt, aspect_ratio, n, images_list):
         self.set_controls_state("normal")
-        self.update_status("图片生成成功！")
+        self.update_status("图片生成成功！正在缓存...")
+        
+        # Generate short title (≤10 chars) for filename use
+        short_title = self._generate_short_title(prompt, max_len=10)
+        
+        # Auto-save images to cache with MM-DD-HHMMSS-short_title.ext naming
+        for i, img_obj in enumerate(images_list):
+            img_url = img_obj.get("url", "")
+            if img_url:
+                cache_name = f"{short_title}_{i+1}" if len(images_list) > 1 else short_title
+                cache_path = self._download_to_cache(img_url, custom_name=cache_name)
+                if cache_path:
+                    img_obj["cache_path"] = cache_path
         
         # Replace the loading message in current messages
         for idx in range(len(self.current_messages) - 1, -1, -1):
@@ -1498,24 +1938,34 @@ class ChatLLM_GUI(tk.Tk):
                     "role": "assistant",
                     "type": "image",
                     "prompt": prompt,
+                    "short_title": short_title,
                     "aspect_ratio": aspect_ratio,
                     "n": n,
                     "images": images_list,
                     "timestamp": datetime.now().isoformat()
                 }
+                msg_idx = idx
                 break
         else:
             self.current_messages.append({
                 "role": "assistant",
                 "type": "image",
                 "prompt": prompt,
+                "short_title": short_title,
                 "aspect_ratio": aspect_ratio,
                 "n": n,
                 "images": images_list,
                 "timestamp": datetime.now().isoformat()
             })
+            msg_idx = len(self.current_messages) - 1
+        
+        # Start background AI call to generate better short title
+        t = threading.Thread(target=self._async_ai_short_title, args=(prompt, msg_idx))
+        t.daemon = True
+        t.start()
             
-        self.save_session_by_id(self.current_session_id)
+        self._register_and_rename_session("image-01")
+            
         self.refresh_chat_display()
 
     def handle_image_error(self, err_msg):
@@ -1546,6 +1996,9 @@ class ChatLLM_GUI(tk.Tk):
     #  AI Music Generation
     # ─────────────────────────────────────────────
     def generate_music(self):
+        if self._is_processing:
+            return
+
         prompt = self.input_text.get("1.0", tk.END).strip()
         if not prompt:
             messagebox.showwarning("警告", "请先在输入框中输入音乐风格提示词！")
@@ -1564,9 +2017,8 @@ class ChatLLM_GUI(tk.Tk):
         self.custom_lyrics = ""
         self.btn_edit_lyrics.config(text="添加歌词")
         
-        if not self.current_session_id:
-            self.new_session()
-            
+        self._ensure_current_session()
+        
         # Log the user's action
         user_msg = {
             "role": "user",
@@ -1586,6 +2038,9 @@ class ChatLLM_GUI(tk.Tk):
         self.current_messages.append(loading_msg)
         self.refresh_chat_display()
         
+        # Save session immediately with user's request as title
+        self._save_session_on_user_request(f"生成音乐: {prompt}", model)
+        
         self.set_controls_state("disabled")
         self.update_status("正在生成音乐，请稍候...")
         
@@ -1596,16 +2051,15 @@ class ChatLLM_GUI(tk.Tk):
     def thread_generate_music(self, prompt, lyrics, model, sample_rate):
         try:
             if not lyrics:
-                self.update_status("正在智能创作歌词...")
+                self.after(0, lambda: self.update_status("正在智能创作歌词..."))
                 try:
                     gen_prompt = f"请根据以下音乐风格或主题提示词，创作一首适合用于音乐生成的简短中文歌词。注意：只需要直接输出歌词文本，绝对不要带有任何前言、引言、标题、副标题、[主歌/副歌]等段落标记、括号说明或后记。格式为每句一行，控制在10-15行。提示词：{prompt}"
-                    from providers import call_minimax_native
                     lyric_gen, _ = call_minimax_native(
                         model="MiniMax-M2.7",
                         history=[],
                         prompt=gen_prompt,
                         b64_images=[],
-                        system_prompt="你是一个顶级的歌词创作家，请直接输出纯歌词文本，不要包含标题和任何格式批注。"
+                        system_prompt="你是一个简洁的摘要工具，只输出10字以内的核心概括，不输出任何其他文字。"
                     )
                     if lyric_gen and lyric_gen.strip():
                         lyrics = lyric_gen.strip()
@@ -1615,8 +2069,7 @@ class ChatLLM_GUI(tk.Tk):
                     print(f"Auto-generate lyrics error: {ex}")
                     lyrics = "美妙的旋律在夜空流淌\n轻风拂过思念的琴弦\n每一个音符都是真挚的向往\n让我们一起歌唱到地久天长"
 
-            self.update_status("正在生成音乐，请稍候...")
-            from providers import music_MiniMax
+            self.after(0, lambda: self.update_status("正在生成音乐，请稍候..."))
             result = music_MiniMax(
                 prompt=prompt,
                 lyrics=lyrics,
@@ -1626,9 +2079,6 @@ class ChatLLM_GUI(tk.Tk):
                 audio_format="mp3",
                 output_format="url"
             )
-            
-            #print("Music Generation API Result:")
-            #print(json.dumps(result, indent=4, ensure_ascii=False))
             
             base_resp = result.get("base_resp", {}) if result else {}
             status_code = base_resp.get("status_code", -1)
@@ -1650,7 +2100,15 @@ class ChatLLM_GUI(tk.Tk):
 
     def handle_music_success(self, prompt, lyrics, audio_url, status):
         self.set_controls_state("normal")
-        self.update_status("音乐生成成功！")
+        self.update_status("音乐生成成功！正在缓存...")
+        
+        # Generate short title (≤10 chars) for filename use
+        short_title = self._generate_short_title(prompt, max_len=10)
+        
+        # Auto-save music to cache with MM-DD-HHMMSS-short_title.ext naming
+        music_cache_path = None
+        if audio_url:
+            music_cache_path = self._download_to_cache(audio_url, custom_name=short_title, timeout=120)
         
         for idx in range(len(self.current_messages) - 1, -1, -1):
             if self.current_messages[idx].get("type") == "music_loading":
@@ -1658,24 +2116,36 @@ class ChatLLM_GUI(tk.Tk):
                     "role": "assistant",
                     "type": "music",
                     "prompt": prompt,
+                    "short_title": short_title,
                     "lyrics": lyrics or "（使用默认歌词）",
                     "audio_url": audio_url,
+                    "cache_path": music_cache_path,
                     "status": status,
                     "timestamp": datetime.now().isoformat()
                 }
+                msg_idx = idx
                 break
         else:
             self.current_messages.append({
                 "role": "assistant",
                 "type": "music",
                 "prompt": prompt,
+                "short_title": short_title,
                 "lyrics": lyrics or "（使用默认歌词）",
                 "audio_url": audio_url,
+                "cache_path": music_cache_path,
                 "status": status,
                 "timestamp": datetime.now().isoformat()
             })
+            msg_idx = len(self.current_messages) - 1
+        
+        # Start background AI call to generate better short title
+        t = threading.Thread(target=self._async_ai_short_title, args=(prompt, msg_idx))
+        t.daemon = True
+        t.start()
             
-        self.save_session_by_id(self.current_session_id)
+        self._register_and_rename_session("music-2.6")
+            
         self.refresh_chat_display()
 
     def handle_music_error(self, err_msg):
@@ -1724,15 +2194,12 @@ class ChatLLM_GUI(tk.Tk):
         def thread_download():
             try:
                 self.update_status("正在下载并保存文件...")
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
                 try:
-                    r = requests.get(url, headers=headers, timeout=60)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60)
                 except requests.exceptions.SSLError:
                     import urllib3
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    r = requests.get(url, headers=headers, timeout=60, verify=False)
+                    r = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60, verify=False)
                     
                 if r.status_code == 200:
                     with open(file_path, "wb") as f:
@@ -1749,6 +2216,14 @@ class ChatLLM_GUI(tk.Tk):
         t = threading.Thread(target=thread_download)
         t.daemon = True
         t.start()
+
+    def _on_close(self):
+        """Save current session then destroy window."""
+        if self.current_session_id and self.current_messages:
+            has_assistant = any(m.get("role") == "assistant" for m in self.current_messages)
+            if has_assistant:
+                self.save_session_by_id(self.current_session_id)
+        self.destroy()
 
 
 if __name__ == "__main__":
