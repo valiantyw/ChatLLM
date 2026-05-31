@@ -678,14 +678,16 @@ class ChatLLM_GUI(tk.Tk):
 
     def _rescan_sessions(self):
         """Scan conversations/*.json, return sorted list of session IDs (newest first
-        based on updated_at / created_at inside the JSON file)."""
+        based on the datetime embedded in the session filename: YYYY-MM-DD-HHMMSS-slug).
+        The timestamp prefix in the ID is extracted for sorting, which is more reliable
+        than relying on updated_at inside JSON (which changes on every save)."""
         entries = []
         if not os.path.isdir(CONV_DIR):
             return []
         for fname in os.listdir(CONV_DIR):
             if fname.endswith(".json") and fname != "index.json":
                 fpath = os.path.join(CONV_DIR, fname)
-                sid = fname[:-5]
+                sid = fname[:-5]  # remove .json
                 try:
                     with open(fpath, "r", encoding="utf-8") as f:
                         data = json.load(f)
@@ -695,8 +697,9 @@ class ChatLLM_GUI(tk.Tk):
                         os.remove(fpath)
                         print(f"Removed incomplete session: {fname}")
                         continue
-                    # Use updated_at if available, fall back to mtime
-                    ts = data.get("updated_at") or data.get("created_at") or ""
+                    # Extract datetime from filename for sorting: YYYY-MM-DD-HHMMSS-slug
+                    # The first 19 chars (YYYY-MM-DD-HHMMSS) are the timestamp
+                    ts = sid[:19] if len(sid) >= 19 else sid
                     entries.append((sid, ts))
                 except Exception:
                     try:
@@ -705,7 +708,7 @@ class ChatLLM_GUI(tk.Tk):
                         pass
                     continue
         # Sort by timestamp descending (newest first).
-        # Timestamps are ISO-8601 strings which sort lexicographically.
+        # The timestamp prefix sorts lexicographically as ISO format.
         entries.sort(key=lambda x: x[1], reverse=True)
         return [sid for sid, _ in entries]
 
@@ -869,8 +872,14 @@ class ChatLLM_GUI(tk.Tk):
         
         if selected_id == self.current_session_id:
             return
+        
+        # Don't save current session if it's a new temp session with no messages
+        # (temp session IDs have slug that is all digits, shown as "新会话")
+        current_slug = self.current_session_id.split("-")[-1] if self.current_session_id else ""
+        is_new_temp_session = current_slug.isdigit()
+        should_save = not (is_new_temp_session and len(self.current_messages) == 0)
             
-        if self.current_session_id:
+        if self.current_session_id and should_save:
             self.save_session_by_id(self.current_session_id)
             
         self.load_session_by_id(selected_id)
