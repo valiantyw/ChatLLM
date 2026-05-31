@@ -27,6 +27,11 @@ from providers import (
     call_minimax_anthropic,
     image_MiniMax,
     music_MiniMax,
+    call_quickrouter,
+    call_nvidia_nim,
+    image_QuickRouter,
+    image_NVIDIA,
+    PROVIDERS,
 )
 
 # Load environment variables
@@ -48,12 +53,8 @@ DOWNLOAD_HEADERS = {
 CONV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conversations")
 os.makedirs(CONV_DIR, exist_ok=True)
 
-# Provider & Model configuration options
-PROVIDERS = {
-    "MiniMax (Native)": ["MiniMax-M2.7", "music-2.6", "image-01"],
-    "MiniMax (OpenAI)": ["MiniMax-M2.7", "music-2.6", "image-01"],
-    "MiniMax (Anthropic)": ["MiniMax-M2.7", "music-2.6", "image-01"],
-}
+# Provider & Model configuration options (loaded from providers/__init__.py)
+# PROVIDERS is now a merged dict from all provider modules
 
 # Default System Prompt
 DEFAULT_SYSTEM_PROMPT = "你是一个智能助手，请始终用中文回复。"
@@ -710,18 +711,15 @@ class ChatLLM_GUI(tk.Tk):
 
     def load_all_sessions(self):
         self._loading_flag = True
+        # Always start with a NEW session on program startup
+        self.new_session()
+        
+        # Then scan existing sessions for sidebar history (don't auto-load them)
         self.sessions = self._rescan_sessions()
                 
         self.history_listbox.delete(0, tk.END)
         for sid in self.sessions:
             self.history_listbox.insert(tk.END, self._session_title_from_id(sid))
-            
-        if self.sessions:
-            self.history_listbox.selection_set(0)
-            self.current_session_id = self.sessions[0]
-            self.load_session_by_id(self.current_session_id)
-        else:
-            self.new_session()
             
         self._loading_flag = False
 
@@ -805,12 +803,7 @@ class ChatLLM_GUI(tk.Tk):
     #  Sidebar Actions (New & Delete Chat)
     # ─────────────────────────────────────────────
     def new_session(self):
-        if self.current_session_id:
-            # Only save old session if it has an AI response
-            has_assistant = any(m.get("role") == "assistant" for m in self.current_messages)
-            if has_assistant:
-                self.save_session_by_id(self.current_session_id)
-            
+        # Do NOT auto-save current session - only save when user explicitly selects an old session
         new_id = datetime.now().strftime("%Y-%m-%d-%H%M%S-%f")
         title = "新会话"
         
@@ -1599,6 +1592,12 @@ class ChatLLM_GUI(tk.Tk):
             elif provider == "MiniMax (Anthropic)":
                 text_result, thinking_result = call_minimax_anthropic(model, api_history, prompt, b64_images, system_prompt)
                 success = True
+            elif provider == "QuickRouter":
+                text_result, thinking_result = call_quickrouter(model, api_history, prompt, b64_images, system_prompt)
+                success = True
+            elif provider == "NVIDIA NIM":
+                text_result, thinking_result = call_nvidia_nim(model, api_history, prompt, b64_images, system_prompt)
+                success = True
             else:
                 raise ValueError(f"未识别的API提供商: {provider}")
         except Exception as e:
@@ -1688,7 +1687,9 @@ class ChatLLM_GUI(tk.Tk):
         
         # Session title and file name are already set by _save_session_on_user_request.
         # Do NOT update them in subsequent rounds.
-        self.save_session_by_id(self.current_session_id)
+        # Only save if this session was already saved (has a proper ID, not the temp -%f format)
+        if '-' in self.current_session_id and not self.current_session_id.endswith('-'):
+            self.save_session_by_id(self.current_session_id)
 
     # ─────────────────────────────────────────────
     #  LLM API Clients Dispatch

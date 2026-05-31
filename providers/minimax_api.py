@@ -4,6 +4,13 @@ import dotenv, requests
 # Load environment variables
 dotenv.load_dotenv(dotenv.find_dotenv())
 
+# Provider models configuration
+PROVIDERS = {
+    "MiniMax (Native)": ["MiniMax-M2.7", "music-2.6", "image-01"],
+    "MiniMax (OpenAI)": ["MiniMax-M2.7", "music-2.6", "image-01"],
+    "MiniMax (Anthropic)": ["MiniMax-M2.7", "music-2.6", "image-01"],
+}
+
 DEFAULT_LYRICS = """[Intro]
 嘿！新年到！
 (新年快乐！)
