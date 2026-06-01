@@ -91,3 +91,14 @@ print(response.text)
 
 
 
+获取模型列表
+-----------
+import requests
+
+url = "https://api.minimaxi.com/v1/models"
+
+headers = {"Authorization": "Bearer <token>"}
+
+response = requests.get(url, headers=headers)
+
+print(response.text)

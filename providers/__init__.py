@@ -1,6 +1,5 @@
 from .minimax_api import (
-    call_minimax_native, call_minimax_openai, call_minimax_anthropic,
-    image_MiniMax, music_MiniMax,
+    call_minimax_openai, image_MiniMax, music_MiniMax,
     PROVIDERS as MINIMAX_PROVIDERS,
 )
 from .quickrouter_api import (

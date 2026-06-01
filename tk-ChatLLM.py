@@ -22,14 +22,15 @@ except ImportError:
     HAS_PIL = False
 
 from providers import (
-    call_minimax_native,
+	# minimax
     call_minimax_openai,
-    call_minimax_anthropic,
     image_MiniMax,
     music_MiniMax,
+	# quickrouter
     call_quickrouter,
-    call_nvidia_nim,
     image_QuickRouter,
+	# nvidia
+    call_nvidia_nim,
     image_NVIDIA,
     PROVIDERS,
 )
@@ -57,7 +58,7 @@ os.makedirs(CONV_DIR, exist_ok=True)
 # PROVIDERS is now a merged dict from all provider modules
 
 # Default System Prompt
-DEFAULT_SYSTEM_PROMPT = "你是一个智能助手，请始终用中文回复。"
+DEFAULT_SYSTEM_PROMPT = "你是智能助手，始终用中文回复。"
 
 # Helpers for file reading
 def read_text_file(filepath):
@@ -323,7 +324,7 @@ class ChatLLM_GUI(tk.Tk):
         lbl_prov.pack(anchor="w", pady=(0, 2))
         self.provider_combo = ttk.Combobox(model_frame, state="readonly", values=list(PROVIDERS.keys()))
         self.provider_combo.pack(fill="x", pady=(0, 8))
-        self.provider_combo.set("MiniMax (Native)")
+        self.provider_combo.set("MiniMax (OpenAI)")
         self.provider_combo.bind("<<ComboboxSelected>>", self.update_model_options)
         
         # Model
@@ -735,8 +736,8 @@ class ChatLLM_GUI(tk.Tk):
                         print(f"Removed incomplete session: {fname}")
                         continue
                     # Extract datetime from filename for sorting: YYYY-MM-DD-HHMMSS-slug
-                    # The first 19 chars (YYYY-MM-DD-HHMMSS) are the timestamp
-                    ts = sid[:19] if len(sid) >= 19 else sid
+                    # The first 17 chars (YYYY-MM-DD-HHMMSS) are the timestamp
+                    ts = sid[:17] if len(sid) >= 17 else sid
                     entries.append((sid, ts))
                 except Exception:
                     try:
@@ -768,16 +769,16 @@ class ChatLLM_GUI(tk.Tk):
         filepath = os.path.join(CONV_DIR, f"{session_id}.json")
         
         messages = []
-        provider = "MiniMax (Native)"
-        model = "MiniMax-M2.7"
+        provider = "MiniMax (OpenAI)"
+        model = "MiniMax-M3"
         system_prompt = DEFAULT_SYSTEM_PROMPT
         if os.path.exists(filepath):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     messages = data.get("messages", [])
-                    provider = data.get("provider", "MiniMax (Native)")
-                    model = data.get("model", "MiniMax-M2.7")
+                    provider = data.get("provider", "MiniMax (OpenAI)")
+                    model = data.get("model", "MiniMax-M3")
                     system_prompt = data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             except Exception as e:
                 print(f"Error loading session file {session_id}.json: {e}")
@@ -1388,7 +1389,7 @@ class ChatLLM_GUI(tk.Tk):
             ai_prompt = (
                 f"请用最多10个汉字概括以下内容的核心主题（只输出概括文字，不要标点、引号、多余字）：{prompt}"
             )
-            desc, _ = call_minimax_native(
+            desc, _ = call_minimax_openai(
                 model="MiniMax-M2.7",
                 history=[],
                 prompt=ai_prompt,
@@ -1634,14 +1635,8 @@ class ChatLLM_GUI(tk.Tk):
         error_msg = ""
         
         try:
-            if provider == "MiniMax (Native)":
-                text_result, thinking_result = call_minimax_native(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "MiniMax (OpenAI)":
+            if provider in ["MiniMax (Native)", "MiniMax (OpenAI)", "MiniMax (Anthropic)"]:
                 text_result, thinking_result = call_minimax_openai(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "MiniMax (Anthropic)":
-                text_result, thinking_result = call_minimax_anthropic(model, api_history, prompt, b64_images, system_prompt)
                 success = True
             elif provider == "QuickRouter":
                 text_result, thinking_result = call_quickrouter(model, api_history, prompt, b64_images, system_prompt)
@@ -1748,7 +1743,7 @@ class ChatLLM_GUI(tk.Tk):
                     t.start()
 
     def _thread_generate_ai_session_title(self, user_prompt):
-        """后台线程：使用当前服务商的文本模型根据用户首条 Prompt 提炼出 3-6 字的高清会话标题"""
+        """后台线程：使用当前服务商的文本模型根据用户首条 Prompt 提炼出 3-16 字的高清会话标题"""
         provider = self.provider_combo.get()
         # 寻找当前提供商排在第一位的文本模型来进行摘要提炼
         text_model = None
@@ -1761,7 +1756,7 @@ class ChatLLM_GUI(tk.Tk):
             return
             
         system_prompt = (
-            "You are a professional session summarizer. Give an extremely short, concise Chinese title (3 to 6 Chinese characters) "
+            "You are a professional session summarizer. Give an extremely short, concise Chinese title (3 to 16 Chinese characters) "
             "for this conversation based on the user's first prompt. Do not use quotes, punctuation, or any extra text."
         )
         
@@ -1780,12 +1775,8 @@ class ChatLLM_GUI(tk.Tk):
             cleaned_prompt = cleaned_prompt.strip('"').strip("'").strip('“').strip('”')
             
             text_result = ""
-            if "MiniMax (Native)" in provider:
-                text_result, _ = call_minimax_native(text_model, [], cleaned_prompt, [], system_prompt)
-            elif "MiniMax (OpenAI)" in provider:
+            if "MiniMax" in provider:
                 text_result, _ = call_minimax_openai(text_model, [], cleaned_prompt, [], system_prompt)
-            elif "MiniMax (Anthropic)" in provider:
-                text_result, _ = call_minimax_anthropic(text_model, [], cleaned_prompt, [], system_prompt)
             elif "QuickRouter" in provider:
                 text_result, _ = call_quickrouter(text_model, [], cleaned_prompt, [], system_prompt)
             elif "NVIDIA NIM" in provider:
@@ -1793,7 +1784,7 @@ class ChatLLM_GUI(tk.Tk):
                 
             ai_title = text_result.strip().strip('"').strip("'").strip('「」『』（）【】“’”')
             if ai_title and len(ai_title) > 0:
-                ai_title = ai_title[:8]  # 限制在8字以内，避免侧边栏溢出
+                ai_title = ai_title[:16]  # 限制在16字以内，避免侧边栏溢出
                 # 线程安全地在主线程更新UI
                 self.after(0, self._apply_ai_session_title, self.current_session_id, ai_title)
         except Exception as e:
@@ -1805,7 +1796,7 @@ class ChatLLM_GUI(tk.Tk):
             old_session_id = self.current_session_id
             
             # 1. 自动提取原本的时间戳前缀并组装包含新 AI 摘要的安全文件名/ID
-            ts = old_session_id[:19] if len(old_session_id) >= 19 else datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            ts = old_session_id[:17] if len(old_session_id) >= 17 else datetime.now().strftime("%Y-%m-%d-%H%M%S")
             safe_ai_slug = self._sanitize_filename(ai_title)
             new_session_id = f"{ts}-{safe_ai_slug}"
             
@@ -1853,6 +1844,12 @@ class ChatLLM_GUI(tk.Tk):
     #  LLM API Clients Dispatch
     # ─────────────────────────────────────────────
     def handle_api_response(self, text, thinking):
+        import re
+        if text:
+            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text).strip()
+        if thinking:
+            thinking = re.sub(r'\n\s*\n\s*\n+', '\n\n', thinking).strip()
+
         model = self.model_combo.get()
         asst_msg = {
             "role": "assistant",
@@ -2145,12 +2142,8 @@ class ChatLLM_GUI(tk.Tk):
             text_result = ""
             thinking_result = ""
             
-            if provider == "MiniMax (Native)":
-                text_result, thinking_result = call_minimax_native(text_model, [], rewrite_input, [], system_prompt)
-            elif provider == "MiniMax (OpenAI)":
+            if provider in ["MiniMax (Native)", "MiniMax (OpenAI)", "MiniMax (Anthropic)"]:
                 text_result, thinking_result = call_minimax_openai(text_model, [], rewrite_input, [], system_prompt)
-            elif provider == "MiniMax (Anthropic)":
-                text_result, thinking_result = call_minimax_anthropic(text_model, [], rewrite_input, [], system_prompt)
             elif provider == "QuickRouter":
                 text_result, thinking_result = call_quickrouter(text_model, [], rewrite_input, [], system_prompt)
             elif provider == "NVIDIA NIM":
@@ -2174,16 +2167,47 @@ class ChatLLM_GUI(tk.Tk):
         history = self._extract_history_list()
         refined_prompt = self._rewrite_prompt_with_history(history, prompt, media_type="image")
         
+        provider = self.provider_combo.get()
         subject_reference = None
         try:
-            result = image_MiniMax(
-                prompt=refined_prompt,
-                model=model,
-                aspect_ratio=aspect_ratio,
-                n=n,
-                prompt_optimizer=prompt_optimizer,
-                subject_reference=subject_reference
-            )
+            if provider == 'QuickRouter':
+                size_map = {
+                    '1:1': '1024x1024',
+                    '16:9': '1792x1024',
+                    '9:16': '1024x1792',
+                    '4:3': '1024x768',
+                    '3:4': '768x1024'
+                }
+                size = size_map.get(aspect_ratio, '1024x1024')
+                result = image_QuickRouter(
+                    prompt=refined_prompt,
+                    model=model,
+                    size=size,
+                    response_format='url'
+                )
+            elif provider == 'NVIDIA NIM':
+                size_map = {
+                    '1:1': '1024x1024',
+                    '16:9': '1792x1024',
+                    '9:16': '1024x1792',
+                    '4:3': '1024x768',
+                    '3:4': '768x1024'
+                }
+                size = size_map.get(aspect_ratio, '1024x1024')
+                result = image_NVIDIA(
+                    prompt=refined_prompt,
+                    model=model,
+                    size=size
+                )
+            else:
+                result = image_MiniMax(
+                    prompt=refined_prompt,
+                    model=model,
+                    aspect_ratio=aspect_ratio,
+                    n=n,
+                    prompt_optimizer=prompt_optimizer,
+                    subject_reference=subject_reference
+                )
             
             images_list = []
             if result:
@@ -2366,7 +2390,7 @@ class ChatLLM_GUI(tk.Tk):
                 self.after(0, lambda: self.update_status("正在智能创作歌词..."))
                 try:
                     gen_prompt = f"请根据以下音乐风格或主题提示词，创作一首适合用于音乐生成的简短中文歌词。注意：只需要直接输出歌词文本，绝对不要带有任何前言、引言、标题、副标题、[主歌/副歌]等段落标记、括号说明或后记。格式为每句一行，控制在10-15行。提示词：{prompt}"
-                    lyric_gen, _ = call_minimax_native(
+                    lyric_gen, _ = call_minimax_openai(
                         model="MiniMax-M2.7",
                         history=[],
                         prompt=gen_prompt,
