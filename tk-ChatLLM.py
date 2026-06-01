@@ -168,6 +168,7 @@ class ChatLLM_GUI(tk.Tk):
         self.custom_lyrics = ""
         self._is_processing = False  # Guard against concurrent API calls
         self._loading_flag = False   # Suppress on_session_select during startup
+        self.session_titles = {}     # Initialize session_titles dictionary
         
         # Configure styles - Use native theme of platform to avoid the retro 'clam' style
         self.style = ttk.Style()
@@ -332,6 +333,8 @@ class ChatLLM_GUI(tk.Tk):
         self.model_combo.pack(fill="x", pady=(0, 8))
         self.model_combo.bind("<<ComboboxSelected>>", self.on_model_changed)
         self.update_model_options(None)
+        
+
         
         # System Prompt
         lbl_sys = ttk.Label(model_frame, text="系统提示词 (System Prompt):")
@@ -665,6 +668,40 @@ class ChatLLM_GUI(tk.Tk):
     # ─────────────────────────────────────────────
     #  Conversation Persistence (no index.json)
     # ─────────────────────────────────────────────
+    def _is_image_model(self, model):
+        """Helper to check if a model is an image generation model."""
+        if not model:
+            return False
+        model_lower = model.lower()
+        return "image" in model_lower or model_lower in ["image-01", "gpt-image-2", "gemini-3.1-flash-image-preview"]
+
+    def _extract_history_list(self):
+        """Extract historical messages up to (but not including) the current round's user request and assistant loading message."""
+        history = []
+        if len(self.current_messages) < 3:
+            return history
+            
+        for msg in self.current_messages[:-2]:
+            role = msg.get("role")
+            msg_type = msg.get("type", "text")
+            
+            content_text = ""
+            if role == "user":
+                content_text = msg.get("content", "")
+            elif role == "assistant":
+                if msg_type == "text":
+                    content_text = msg.get("content", "")
+                elif msg_type == "image":
+                    content_text = f"[Image prompt generated]: {msg.get('prompt', '')}"
+                elif msg_type == "music":
+                    content_text = f"[Music prompt generated]: {msg.get('prompt', '')}\n[Lyrics]: {msg.get('lyrics', '')}"
+                elif msg_type == "error":
+                    content_text = f"[Error]: {msg.get('content', '')}"
+                    
+            if content_text:
+                history.append({"role": role, "content": content_text})
+        return history
+
     @staticmethod
     def _session_title_from_id(session_id):
         """Extract display title from session filename (last `-` segment)."""
@@ -734,7 +771,6 @@ class ChatLLM_GUI(tk.Tk):
         provider = "MiniMax (Native)"
         model = "MiniMax-M2.7"
         system_prompt = DEFAULT_SYSTEM_PROMPT
-        
         if os.path.exists(filepath):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
@@ -751,14 +787,33 @@ class ChatLLM_GUI(tk.Tk):
         # Restore settings in UI
         if provider in PROVIDERS:
             self.provider_combo.set(provider)
-            self.update_model_options(None)
-            if model in PROVIDERS[provider]:
+            # Update the values list for model_combo without resetting/triggering on_model_changed
+            models = PROVIDERS.get(provider, [])
+            self.model_combo["values"] = models
+            if model in models:
                 self.model_combo.set(model)
             else:
-                self.model_combo.set(PROVIDERS[provider][0])
+                self.model_combo.set(models[0]) if models else self.model_combo.set("")
+            self.on_model_changed(None)
+            
+            # If the model is an image model, restore the last used aspect ratio and count from history
+            if self._is_image_model(model):
+                last_aspect = "16:9"
+                last_n = "1"
+                for msg in reversed(self.current_messages):
+                    if msg.get("type") == "image":
+                        last_aspect = msg.get("aspect_ratio", "16:9")
+                        last_n = str(msg.get("n", "1"))
+                        break
+                if hasattr(self, 'img_aspect_combo'):
+                    self.img_aspect_combo.set(last_aspect)
+                if hasattr(self, 'img_n_combo'):
+                    self.img_n_combo.set(last_n)
                 
         self.system_text.delete("1.0", tk.END)
         self.system_text.insert("1.0", system_prompt)
+        
+
         
         # Update session title label
         title = self._session_title_from_id(session_id)
@@ -767,6 +822,7 @@ class ChatLLM_GUI(tk.Tk):
             
         # Render historical chat dialogue
         self.refresh_chat_display()
+        self.update_idletasks()
 
     def save_session_by_id(self, session_id):
         if not session_id:
@@ -976,7 +1032,6 @@ class ChatLLM_GUI(tk.Tk):
                         if len(images) > 1 and HAS_PIL:
                             # ── Multiple images: ◀ cards ... ▶ (left/right arrows) ──
                             scroll_container = tk.Frame(self.chat_display, background="#f1f5f9")
-                            scroll_container.pack(fill="x", expand=True)
 
                             # Outer row: [◀] [canvas] [▶]
                             btn_left = tk.Button(scroll_container, text="◀", font=("Segoe UI", 14, "bold"),
@@ -994,17 +1049,6 @@ class ChatLLM_GUI(tk.Tk):
                                                   activebackground="#cbd5e1", cursor="hand2",
                                                   width=2, bd=0)
                             btn_right.pack(side="left", fill="y", expand=False)
-
-                            # Compute canvas width after buttons are rendered
-                            def _layout_and_scroll():
-                                self.update_idletasks()
-                                avail_w = scroll_container.winfo_width()
-                                btn_w = btn_left.winfo_width() + btn_right.winfo_width()
-                                canvas_w = max(avail_w - btn_w, 400)
-                                canvas.config(width=canvas_w, height=160)
-                                canvas.config(scrollregion=canvas.bbox("all"))
-                            self.after(50, _layout_and_scroll)
-                            self.after(300, _layout_and_scroll)
                             
                             # Inner frame inside canvas
                             card_row = tk.Frame(canvas, bg="#f1f5f9")
@@ -1366,10 +1410,8 @@ class ChatLLM_GUI(tk.Tk):
 
     def _ensure_current_session(self):
         """Ensure a current session exists, create new one if needed."""
-        print(f"[DEBUG] _ensure_current_session: current_session_id={self.current_session_id}")
         if not self.current_session_id:
             self.new_session()
-            print(f"[DEBUG] _ensure_current_session: created new session, current_session_id={self.current_session_id}")
 
     def _generate_short_title(self, text, max_len=9):
         """Generate a short title (max_len chars) from text for use in filename."""
@@ -1469,7 +1511,7 @@ class ChatLLM_GUI(tk.Tk):
         model = self.model_combo.get()
         if model == "music-2.6":
             self.generate_music()
-        elif model == "image-01":
+        elif self._is_image_model(model):
             self.generate_image()
         else:
             self.send_message()
@@ -1503,7 +1545,7 @@ class ChatLLM_GUI(tk.Tk):
         if model == "music-2.6":
             self.generate_music()
             return
-        if model == "image-01":
+        if self._is_image_model(model):
             self.generate_image()
             return
             
@@ -1651,39 +1693,35 @@ class ChatLLM_GUI(tk.Tk):
         """
         self._ensure_current_session()
         
-        first_line = user_content.split("\n")[0].strip() if user_content else ""
-        if not first_line:
-            return
-        
-        # Compute final file ID (timestamp + slug from first line)
-        slug = self._generate_short_title(first_line, max_len=10)
-        safe_slug = self._sanitize_filename(slug)
         current_id = self.current_session_id
-        if safe_slug and safe_slug != "_":
-            ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            final_id = f"{ts}-{safe_slug}"
-            # Clean up any old file with bare ID
-            old_path = os.path.join(CONV_DIR, f"{current_id}.json")
-            if os.path.exists(old_path):
-                try:
-                    os.remove(old_path)
-                except Exception:
-                    pass
-            self.current_session_id = final_id
-        else:
-            final_id = current_id
+        current_slug = current_id.split("-")[-1] if current_id else ""
+        # Session is temp if slug is digits or not in self.sessions yet
+        is_new_temp_session = current_slug.isdigit() or (current_id not in self.sessions)
         
-        # Update sidebar: add to front of sessions list
-        if final_id not in self.sessions:
-            self.sessions.insert(0, final_id)
+        if is_new_temp_session:
+            first_line = user_content.split("\n")[0].strip() if user_content else ""
+            if first_line:
+                slug = self._generate_short_title(first_line, max_len=10)
+                safe_slug = self._sanitize_filename(slug)
+                if safe_slug and safe_slug != "_":
+                    ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+                    final_id = f"{ts}-{safe_slug}"
+                    old_path = os.path.join(CONV_DIR, f"{current_id}.json")
+                    if os.path.exists(old_path):
+                        try:
+                            os.remove(old_path)
+                        except Exception:
+                            pass
+                    self.current_session_id = final_id
+                    
+        if self.current_session_id not in self.sessions:
+            self.sessions.insert(0, self.current_session_id)
         self.refresh_listbox_titles()
         
-        # Sidebar label from slug
-        title = self._session_title_from_id(final_id)
+        title = self._session_title_from_id(self.current_session_id)
         if hasattr(self, "lbl_session_title"):
             self.lbl_session_title.config(text=title)
         
-        # Save session data to disk
         self.save_session_by_id(self.current_session_id)
 
     # ─────────────────────────────────────────────
@@ -1699,6 +1737,117 @@ class ChatLLM_GUI(tk.Tk):
         # Only save if this session was already saved (has a proper ID, not the temp -%f format)
         if '-' in self.current_session_id and not self.current_session_id.endswith('-'):
             self.save_session_by_id(self.current_session_id)
+            
+            # 💡 新增：在对话首轮（1条user消息+1条assistant消息）触发后台AI异步会话摘要生成，智能提炼侧边栏标题
+            text_msgs = [m for m in self.current_messages if m.get("type", "text") == "text" or m.get("type") in ["image", "music"]]
+            if len(text_msgs) <= 2:
+                first_msg_content = text_msgs[0]["content"] if text_msgs else ""
+                if first_msg_content:
+                    t = threading.Thread(target=self._thread_generate_ai_session_title, args=(first_msg_content,))
+                    t.daemon = True
+                    t.start()
+
+    def _thread_generate_ai_session_title(self, user_prompt):
+        """后台线程：使用当前服务商的文本模型根据用户首条 Prompt 提炼出 3-6 字的高清会话标题"""
+        provider = self.provider_combo.get()
+        # 寻找当前提供商排在第一位的文本模型来进行摘要提炼
+        text_model = None
+        for m in PROVIDERS.get(provider, []):
+            if not self._is_image_model(m) and m != "music-2.6":
+                text_model = m
+                break
+                
+        if not text_model:
+            return
+            
+        system_prompt = (
+            "You are a professional session summarizer. Give an extremely short, concise Chinese title (3 to 6 Chinese characters) "
+            "for this conversation based on the user's first prompt. Do not use quotes, punctuation, or any extra text."
+        )
+        
+        try:
+            # 去除前缀和参数干扰，提取纯净的提示词描述
+            cleaned_prompt = user_prompt
+            if cleaned_prompt.startswith("生成图片:"):
+                cleaned_prompt = cleaned_prompt.replace("生成图片:", "").strip()
+            elif cleaned_prompt.startswith("生成音乐:"):
+                cleaned_prompt = cleaned_prompt.replace("生成音乐:", "").strip()
+                
+            import re
+            cleaned_prompt = re.sub(r"\(比例:.*?, 数量:.*?\)", "", cleaned_prompt).strip()
+            cleaned_prompt = re.sub(r"\(歌词自动生成\)", "", cleaned_prompt).strip()
+            cleaned_prompt = re.sub(r"\(自定义歌词:.*?\)", "", cleaned_prompt).strip()
+            cleaned_prompt = cleaned_prompt.strip('"').strip("'").strip('“').strip('”')
+            
+            text_result = ""
+            if "MiniMax (Native)" in provider:
+                text_result, _ = call_minimax_native(text_model, [], cleaned_prompt, [], system_prompt)
+            elif "MiniMax (OpenAI)" in provider:
+                text_result, _ = call_minimax_openai(text_model, [], cleaned_prompt, [], system_prompt)
+            elif "MiniMax (Anthropic)" in provider:
+                text_result, _ = call_minimax_anthropic(text_model, [], cleaned_prompt, [], system_prompt)
+            elif "QuickRouter" in provider:
+                text_result, _ = call_quickrouter(text_model, [], cleaned_prompt, [], system_prompt)
+            elif "NVIDIA NIM" in provider:
+                text_result, _ = call_nvidia_nim(text_model, [], cleaned_prompt, [], system_prompt)
+                
+            ai_title = text_result.strip().strip('"').strip("'").strip('「」『』（）【】“’”')
+            if ai_title and len(ai_title) > 0:
+                ai_title = ai_title[:8]  # 限制在8字以内，避免侧边栏溢出
+                # 线程安全地在主线程更新UI
+                self.after(0, self._apply_ai_session_title, self.current_session_id, ai_title)
+        except Exception as e:
+            print(f"Error generating AI session title in background: {e}")
+
+    def _apply_ai_session_title(self, session_id, ai_title):
+        """主线程安全：将 AI 生成的精致标题应用到缓存、UI、和磁盘物理文件名中"""
+        if session_id == self.current_session_id:
+            old_session_id = self.current_session_id
+            
+            # 1. 自动提取原本的时间戳前缀并组装包含新 AI 摘要的安全文件名/ID
+            ts = old_session_id[:19] if len(old_session_id) >= 19 else datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            safe_ai_slug = self._sanitize_filename(ai_title)
+            new_session_id = f"{ts}-{safe_ai_slug}"
+            
+            # 2. 如果文件名需要改变，执行平滑安全的磁盘文件迁移
+            if new_session_id != old_session_id:
+                old_filepath = os.path.join(CONV_DIR, f"{old_session_id}.json")
+                new_filepath = os.path.join(CONV_DIR, f"{new_session_id}.json")
+                
+                # 迁移内存 Session 变量与集合
+                self.current_session_id = new_session_id
+                
+                if old_session_id in self.sessions:
+                    idx = self.sessions.index(old_session_id)
+                    self.sessions[idx] = new_session_id
+                    
+                # 迁移内存中的展示标题缓存
+                self.session_titles[new_session_id] = ai_title
+                self.session_titles.pop(old_session_id, None)
+                
+                # 安全保存新 JSON 文件
+                self.save_session_by_id(new_session_id)
+                
+                # 释放并清除磁盘上的旧 JSON 文件
+                if os.path.exists(old_filepath):
+                    try:
+                        os.remove(old_filepath)
+                    except Exception as e:
+                        print(f"Error removing old session file {old_session_id}.json during rename: {e}")
+            else:
+                self.session_titles[old_session_id] = ai_title
+            
+            # 3. 更新右侧顶部大标题
+            if hasattr(self, 'lbl_session_title'):
+                self.lbl_session_title.config(text=ai_title)
+                
+            # 4. 刷新侧边栏列表标题显示
+            self.refresh_listbox_titles()
+            
+            # 5. 再次保存确保万无一失
+            self.save_session_by_id(self.current_session_id)
+            
+            self.update_status(f"会话及 JSON 文件名提炼成功: 「{ai_title}」")
 
     # ─────────────────────────────────────────────
     #  LLM API Clients Dispatch
@@ -1756,7 +1905,7 @@ class ChatLLM_GUI(tk.Tk):
             # Show music specific options
             if hasattr(self, 'btn_edit_lyrics'): self.btn_edit_lyrics.pack(side="left", padx=(15, 2))
                 
-        elif model == "image-01":
+        elif self._is_image_model(model):
             # Show image specific options
             if hasattr(self, 'lbl_aspect'): self.lbl_aspect.pack(side="left", padx=(5, 2))
             if hasattr(self, 'img_aspect_combo'): self.img_aspect_combo.pack(side="left", padx=2)
@@ -1766,6 +1915,8 @@ class ChatLLM_GUI(tk.Tk):
             # Set default values
             if hasattr(self, 'img_aspect_combo'): self.img_aspect_combo.set("16:9")
             if hasattr(self, 'img_n_combo'): self.img_n_combo.set("1")
+            
+        self.update_idletasks()
 
     def parse_image_prompt_overrides(self, prompt, default_aspect="16:9", default_n=1):
         aspect_ratio = default_aspect
@@ -1898,8 +2049,9 @@ class ChatLLM_GUI(tk.Tk):
         self.img_aspect_combo.set(aspect_ratio)
         self.img_n_combo.set(str(n))
             
-        # Fixed model parameters as requested
-        model = "image-01"
+        model = self.model_combo.get()
+        if not self._is_image_model(model):
+            model = "image-01"
         prompt_optimizer = True
         
         # Clear main input text
@@ -1937,11 +2089,95 @@ class ChatLLM_GUI(tk.Tk):
         t.daemon = True
         t.start()
 
+    def _rewrite_prompt_with_history(self, history, current_prompt, media_type="image"):
+        """Use text LLM to rewrite, expand, and merge the current prompt based on previous session history.
+        Makes image/music generation perfectly aware of previous context.
+        """
+        if not history:
+            return current_prompt
+            
+        provider = self.provider_combo.get()
+        # Find the first text model of the current provider
+        text_model = None
+        for m in PROVIDERS.get(provider, []):
+            if not self._is_image_model(m) and m != "music-2.6":  # Skip multimedia models
+                text_model = m
+                break
+                
+        if not text_model:
+            return current_prompt  # Fallback to current prompt if no text model
+            
+        if media_type == "image":
+            system_prompt = (
+                "You are an expert AI image prompt optimizer. The user wants to generate an image. "
+                "They might refer to previous images, descriptions, or prompts in the conversation. "
+                "Based on the conversation history and their new request, rewrite and output a single, "
+                "detailed, and optimized English or Chinese text-to-image prompt that incorporates their feedback. "
+                "If the user asks to modify the previous image, you must look at the previous image prompts and "
+                "apply the user's modifications (e.g. changing colors, adding/removing objects, altering style, "
+                "changing mood/brightness) to the previous detailed prompt, and output the new combined detailed prompt. "
+                "Output ONLY the final expanded/optimized prompt string. Do not include any explanations, "
+                "introductory words, or quotes."
+            )
+        else:  # music
+            system_prompt = (
+                "You are an expert AI music style and prompt optimizer. The user wants to generate music. "
+                "They might refer to previous music style descriptions or lyrics in the conversation. "
+                "Based on the conversation history and their new request, rewrite and output a single, "
+                "detailed, and optimized music style prompt (e.g. Mandopop, Upbeat, Celebration, New Year, with instruments and tempo) "
+                "incorporating their feedback. "
+                "Output ONLY the final expanded/optimized music style prompt string. Do not include any explanations, "
+                "introductory words, or quotes."
+            )
+            
+        history_str = ""
+        for h in history:
+            role_label = "User" if h["role"] == "user" else "AI"
+            history_str += f"{role_label}: {h['content']}\n"
+            
+        rewrite_input = (
+            f"Conversation History:\n{history_str}\n"
+            f"New feedback or request: {current_prompt}\n"
+            f"Generate the combined final detailed {media_type} prompt:"
+        )
+        
+        try:
+            text_result = ""
+            thinking_result = ""
+            
+            if provider == "MiniMax (Native)":
+                text_result, thinking_result = call_minimax_native(text_model, [], rewrite_input, [], system_prompt)
+            elif provider == "MiniMax (OpenAI)":
+                text_result, thinking_result = call_minimax_openai(text_model, [], rewrite_input, [], system_prompt)
+            elif provider == "MiniMax (Anthropic)":
+                text_result, thinking_result = call_minimax_anthropic(text_model, [], rewrite_input, [], system_prompt)
+            elif provider == "QuickRouter":
+                text_result, thinking_result = call_quickrouter(text_model, [], rewrite_input, [], system_prompt)
+            elif provider == "NVIDIA NIM":
+                text_result, thinking_result = call_nvidia_nim(text_model, [], rewrite_input, [], system_prompt)
+                
+            refined_prompt = text_result.strip()
+            if refined_prompt:
+                # Strip wrapping quotes
+                if refined_prompt.startswith('"') and refined_prompt.endswith('"'):
+                    refined_prompt = refined_prompt[1:-1]
+                if refined_prompt.startswith("'") and refined_prompt.endswith("'"):
+                    refined_prompt = refined_prompt[1:-1]
+                print(f"[{media_type} context understanding] Prompt refined from '{current_prompt}' to: '{refined_prompt}'")
+                return refined_prompt
+        except Exception as e:
+            print(f"Error refining {media_type} prompt with history: {e}")
+            
+        return current_prompt
+
     def thread_generate_image(self, prompt, model, aspect_ratio, n, prompt_optimizer, ref_path):
+        history = self._extract_history_list()
+        refined_prompt = self._rewrite_prompt_with_history(history, prompt, media_type="image")
+        
         subject_reference = None
         try:
             result = image_MiniMax(
-                prompt=prompt,
+                prompt=refined_prompt,
                 model=model,
                 aspect_ratio=aspect_ratio,
                 n=n,
@@ -2123,6 +2359,8 @@ class ChatLLM_GUI(tk.Tk):
         t.start()
 
     def thread_generate_music(self, prompt, lyrics, model, sample_rate):
+        history = self._extract_history_list()
+        refined_prompt = self._rewrite_prompt_with_history(history, prompt, media_type="music")
         try:
             if not lyrics:
                 self.after(0, lambda: self.update_status("正在智能创作歌词..."))
@@ -2145,7 +2383,7 @@ class ChatLLM_GUI(tk.Tk):
 
             self.after(0, lambda: self.update_status("正在生成音乐，请稍候..."))
             result = music_MiniMax(
-                prompt=prompt,
+                prompt=refined_prompt,
                 lyrics=lyrics,
                 model=model,
                 sample_rate=sample_rate,

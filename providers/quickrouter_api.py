@@ -12,7 +12,6 @@ import dotenv, requests
 env_path = dotenv.find_dotenv(os.path.join(os.path.dirname(__file__), '../../.env'))
 if env_path:
     dotenv.load_dotenv(env_path)
-    print(f"[DEBUG] Loaded .env from: {env_path}")
 else:
     dotenv.load_dotenv()  # Try default locations
 
@@ -105,9 +104,6 @@ def call_quickrouter(model, history, prompt, b64_images, system_prompt):
     """
     api_key = os.getenv("QUICKROUTER_API_KEY")
     base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
-    print(f"[DEBUG] QuickRouter API Key: {api_key[:15] if api_key else 'None'}...")
-    print(f"[DEBUG] QuickRouter Base URL: {base_url}")
-    print(f"[DEBUG] QuickRouter Model: {model}")
     if not api_key:
         raise ValueError("未在环境变量中设置 QUICKROUTER_API_KEY")
     
