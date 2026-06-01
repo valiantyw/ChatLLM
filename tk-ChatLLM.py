@@ -22,17 +22,18 @@ except ImportError:
     HAS_PIL = False
 
 from providers import (
-	# minimax
-    call_minimax_openai,
-    image_MiniMax,
-    music_MiniMax,
-	# quickrouter
-    call_quickrouter,
-    image_QuickRouter,
-	# nvidia
-    call_nvidia_nim,
-    image_NVIDIA,
     PROVIDERS,
+    DEFAULT_PROVIDER,
+    DEFAULT_MODEL,
+    SHORT_TITLE_PROVIDER,
+    SHORT_TITLE_MODEL,
+    MUSIC_MODEL,
+    DEFAULT_IMAGE_MODEL,
+    is_image_model,
+    is_music_model,
+    call_chat_api,
+    call_image_api,
+    call_music_api,
 )
 
 # Load environment variables
@@ -324,7 +325,7 @@ class ChatLLM_GUI(tk.Tk):
         lbl_prov.pack(anchor="w", pady=(0, 2))
         self.provider_combo = ttk.Combobox(model_frame, state="readonly", values=list(PROVIDERS.keys()))
         self.provider_combo.pack(fill="x", pady=(0, 8))
-        self.provider_combo.set("MiniMax (OpenAI)")
+        self.provider_combo.set(DEFAULT_PROVIDER)
         self.provider_combo.bind("<<ComboboxSelected>>", self.update_model_options)
         
         # Model
@@ -671,10 +672,7 @@ class ChatLLM_GUI(tk.Tk):
     # ─────────────────────────────────────────────
     def _is_image_model(self, model):
         """Helper to check if a model is an image generation model."""
-        if not model:
-            return False
-        model_lower = model.lower()
-        return "image" in model_lower or model_lower in ["image-01", "gpt-image-2", "gemini-3.1-flash-image-preview"]
+        return is_image_model(model)
 
     def _extract_history_list(self):
         """Extract historical messages up to (but not including) the current round's user request and assistant loading message."""
@@ -769,16 +767,16 @@ class ChatLLM_GUI(tk.Tk):
         filepath = os.path.join(CONV_DIR, f"{session_id}.json")
         
         messages = []
-        provider = "MiniMax (OpenAI)"
-        model = "MiniMax-M3"
+        provider = DEFAULT_PROVIDER
+        model = DEFAULT_MODEL
         system_prompt = DEFAULT_SYSTEM_PROMPT
         if os.path.exists(filepath):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     messages = data.get("messages", [])
-                    provider = data.get("provider", "MiniMax (OpenAI)")
-                    model = data.get("model", "MiniMax-M3")
+                    provider = data.get("provider", DEFAULT_PROVIDER)
+                    model = data.get("model", DEFAULT_MODEL)
                     system_prompt = data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             except Exception as e:
                 print(f"Error loading session file {session_id}.json: {e}")
@@ -1185,7 +1183,7 @@ class ChatLLM_GUI(tk.Tk):
                                     
                 elif msg_type == "music_loading":
                     self.chat_display.insert(tk.END, f"🎵 AI 音乐生成中...\n", "assistant")
-                    self.chat_display.insert(tk.END, f"正在呼叫 MiniMax 音乐接口，提示词: \"{msg.get('prompt')}\"...\n", "assistant_body")
+                    self.chat_display.insert(tk.END, f"正在呼叫 AI 音乐生成接口，提示词: \"{msg.get('prompt')}\"...\n", "assistant_body")
                     
                 elif msg_type == "music":
                     self.chat_display.insert(tk.END, f"🎵 AI 音乐\n", "assistant")
@@ -1389,12 +1387,13 @@ class ChatLLM_GUI(tk.Tk):
             ai_prompt = (
                 f"请用最多10个汉字概括以下内容的核心主题（只输出概括文字，不要标点、引号、多余字）：{prompt}"
             )
-            desc, _ = call_minimax_openai(
-                model="MiniMax-M2.7",
+            desc, _ = call_chat_api(
+                provider=SHORT_TITLE_PROVIDER,
+                model=SHORT_TITLE_MODEL,
                 history=[],
                 prompt=ai_prompt,
                 b64_images=[],
-                system_prompt="你是一个简洁的摘要工具，只输出10字以内的核心概括，不输出任何其他文字。"
+                system_prompt="???????????????10???????????????????"
             )
             short = desc.strip().strip('"').strip("'").strip('「」『』（）【】') if desc else ""
             short = short[:10].replace("\n", "").replace("\r", "")
@@ -1510,7 +1509,7 @@ class ChatLLM_GUI(tk.Tk):
 
     def on_enter_pressed(self, event):
         model = self.model_combo.get()
-        if model == "music-2.6":
+        if is_music_model(model):
             self.generate_music()
         elif self._is_image_model(model):
             self.generate_image()
@@ -1543,7 +1542,7 @@ class ChatLLM_GUI(tk.Tk):
             return
 
         model = self.model_combo.get()
-        if model == "music-2.6":
+        if is_music_model(model):
             self.generate_music()
             return
         if self._is_image_model(model):
@@ -1635,17 +1634,8 @@ class ChatLLM_GUI(tk.Tk):
         error_msg = ""
         
         try:
-            if provider in ["MiniMax (Native)", "MiniMax (OpenAI)", "MiniMax (Anthropic)"]:
-                text_result, thinking_result = call_minimax_openai(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "QuickRouter":
-                text_result, thinking_result = call_quickrouter(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            elif provider == "NVIDIA NIM":
-                text_result, thinking_result = call_nvidia_nim(model, api_history, prompt, b64_images, system_prompt)
-                success = True
-            else:
-                raise ValueError(f"未识别的API提供商: {provider}")
+            text_result, thinking_result = call_chat_api(provider, model, api_history, prompt, b64_images, system_prompt)
+            success = True
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1748,7 +1738,7 @@ class ChatLLM_GUI(tk.Tk):
         # 寻找当前提供商排在第一位的文本模型来进行摘要提炼
         text_model = None
         for m in PROVIDERS.get(provider, []):
-            if not self._is_image_model(m) and m != "music-2.6":
+            if not self._is_image_model(m) and not is_music_model(m):
                 text_model = m
                 break
                 
@@ -1774,13 +1764,7 @@ class ChatLLM_GUI(tk.Tk):
             cleaned_prompt = re.sub(r"\(自定义歌词:.*?\)", "", cleaned_prompt).strip()
             cleaned_prompt = cleaned_prompt.strip('"').strip("'").strip('“').strip('”')
             
-            text_result = ""
-            if "MiniMax" in provider:
-                text_result, _ = call_minimax_openai(text_model, [], cleaned_prompt, [], system_prompt)
-            elif "QuickRouter" in provider:
-                text_result, _ = call_quickrouter(text_model, [], cleaned_prompt, [], system_prompt)
-            elif "NVIDIA NIM" in provider:
-                text_result, _ = call_nvidia_nim(text_model, [], cleaned_prompt, [], system_prompt)
+            text_result, _ = call_chat_api(provider, text_model, [], cleaned_prompt, [], system_prompt)
                 
             ai_title = text_result.strip().strip('"').strip("'").strip('「」『』（）【】“’”')
             if ai_title and len(ai_title) > 0:
@@ -1898,7 +1882,7 @@ class ChatLLM_GUI(tk.Tk):
         if hasattr(self, 'img_n_combo'): self.img_n_combo.pack_forget()
         if hasattr(self, 'btn_edit_lyrics'): self.btn_edit_lyrics.pack_forget()
         
-        if model == "music-2.6":
+        if is_music_model(model):
             # Show music specific options
             if hasattr(self, 'btn_edit_lyrics'): self.btn_edit_lyrics.pack(side="left", padx=(15, 2))
                 
@@ -2048,7 +2032,7 @@ class ChatLLM_GUI(tk.Tk):
             
         model = self.model_combo.get()
         if not self._is_image_model(model):
-            model = "image-01"
+            model = DEFAULT_IMAGE_MODEL
         prompt_optimizer = True
         
         # Clear main input text
@@ -2097,7 +2081,7 @@ class ChatLLM_GUI(tk.Tk):
         # Find the first text model of the current provider
         text_model = None
         for m in PROVIDERS.get(provider, []):
-            if not self._is_image_model(m) and m != "music-2.6":  # Skip multimedia models
+            if not self._is_image_model(m) and not is_music_model(m):  # Skip multimedia models
                 text_model = m
                 break
                 
@@ -2142,12 +2126,7 @@ class ChatLLM_GUI(tk.Tk):
             text_result = ""
             thinking_result = ""
             
-            if provider in ["MiniMax (Native)", "MiniMax (OpenAI)", "MiniMax (Anthropic)"]:
-                text_result, thinking_result = call_minimax_openai(text_model, [], rewrite_input, [], system_prompt)
-            elif provider == "QuickRouter":
-                text_result, thinking_result = call_quickrouter(text_model, [], rewrite_input, [], system_prompt)
-            elif provider == "NVIDIA NIM":
-                text_result, thinking_result = call_nvidia_nim(text_model, [], rewrite_input, [], system_prompt)
+            text_result, thinking_result = call_chat_api(provider, text_model, [], rewrite_input, [], system_prompt)
                 
             refined_prompt = text_result.strip()
             if refined_prompt:
@@ -2170,44 +2149,15 @@ class ChatLLM_GUI(tk.Tk):
         provider = self.provider_combo.get()
         subject_reference = None
         try:
-            if provider == 'QuickRouter':
-                size_map = {
-                    '1:1': '1024x1024',
-                    '16:9': '1792x1024',
-                    '9:16': '1024x1792',
-                    '4:3': '1024x768',
-                    '3:4': '768x1024'
-                }
-                size = size_map.get(aspect_ratio, '1024x1024')
-                result = image_QuickRouter(
-                    prompt=refined_prompt,
-                    model=model,
-                    size=size,
-                    response_format='url'
-                )
-            elif provider == 'NVIDIA NIM':
-                size_map = {
-                    '1:1': '1024x1024',
-                    '16:9': '1792x1024',
-                    '9:16': '1024x1792',
-                    '4:3': '1024x768',
-                    '3:4': '768x1024'
-                }
-                size = size_map.get(aspect_ratio, '1024x1024')
-                result = image_NVIDIA(
-                    prompt=refined_prompt,
-                    model=model,
-                    size=size
-                )
-            else:
-                result = image_MiniMax(
-                    prompt=refined_prompt,
-                    model=model,
-                    aspect_ratio=aspect_ratio,
-                    n=n,
-                    prompt_optimizer=prompt_optimizer,
-                    subject_reference=subject_reference
-                )
+            result = call_image_api(
+                provider=provider,
+                prompt=refined_prompt,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                n=n,
+                prompt_optimizer=prompt_optimizer,
+                subject_reference=subject_reference
+            )
             
             images_list = []
             if result:
@@ -2251,7 +2201,7 @@ class ChatLLM_GUI(tk.Tk):
 
     def handle_image_success(self, prompt, aspect_ratio, n, images_list):
         self.set_controls_state("normal")
-        self.update_status("图片生成成功！正在缓存...")
+        self.update_status("图片生成成功！")
         
         # Generate short title (≤10 chars) for filename use
         short_title = self._generate_short_title(prompt, max_len=10)
@@ -2343,7 +2293,7 @@ class ChatLLM_GUI(tk.Tk):
             lyrics = None
             
         # Fixed model parameters as requested
-        model = "music-2.6"
+        model = MUSIC_MODEL
         sample_rate = 44100
         
         # Clear fields
@@ -2390,8 +2340,9 @@ class ChatLLM_GUI(tk.Tk):
                 self.after(0, lambda: self.update_status("正在智能创作歌词..."))
                 try:
                     gen_prompt = f"请根据以下音乐风格或主题提示词，创作一首适合用于音乐生成的简短中文歌词。注意：只需要直接输出歌词文本，绝对不要带有任何前言、引言、标题、副标题、[主歌/副歌]等段落标记、括号说明或后记。格式为每句一行，控制在10-15行。提示词：{prompt}"
-                    lyric_gen, _ = call_minimax_openai(
-                        model="MiniMax-M2.7",
+                    lyric_gen, _ = call_chat_api(
+                        provider=SHORT_TITLE_PROVIDER,
+                        model=SHORT_TITLE_MODEL,
                         history=[],
                         prompt=gen_prompt,
                         b64_images=[],
@@ -2406,14 +2357,13 @@ class ChatLLM_GUI(tk.Tk):
                     lyrics = "美妙的旋律在夜空流淌\n轻风拂过思念的琴弦\n每一个音符都是真挚的向往\n让我们一起歌唱到地久天长"
 
             self.after(0, lambda: self.update_status("正在生成音乐，请稍候..."))
-            result = music_MiniMax(
+            provider = self.provider_combo.get()
+            result = call_music_api(
+                provider=provider,
                 prompt=refined_prompt,
                 lyrics=lyrics,
                 model=model,
-                sample_rate=sample_rate,
-                bitrate=256000,
-                audio_format="mp3",
-                output_format="url"
+                sample_rate=sample_rate
             )
             
             base_resp = result.get("base_resp", {}) if result else {}
@@ -2436,7 +2386,7 @@ class ChatLLM_GUI(tk.Tk):
 
     def handle_music_success(self, prompt, lyrics, audio_url, status):
         self.set_controls_state("normal")
-        self.update_status("音乐生成成功！正在缓存...")
+        self.update_status("音乐生成成功！")
         
         # Generate short title (≤10 chars) for filename use
         short_title = self._generate_short_title(prompt, max_len=10)
