@@ -6,7 +6,7 @@ dotenv.load_dotenv(dotenv.find_dotenv())
 
 # Provider models configuration
 PROVIDERS = {
-    "MiniMax (OpenAI)": ["MiniMax-M3", "MiniMax-M2.7", "music-2.6", "image-01"],
+    "MiniMax (OpenAI)": ["MiniMax-M3", "music-2.6", "image-01"],
 }
 
 DEFAULT_LYRICS = """[Intro]
@@ -183,7 +183,7 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
 # ──────────────────────────────────────────────────────────────────────── #
 # 3. Text Generation (OpenAI SDK) - Chat Integration Method
 # ──────────────────────────────────────────────────────────────────────── #
-def call_minimax_openai(model, history, prompt, b64_images, system_prompt):
+def call_minimax_openai(model, history, prompt, b64_data, system_prompt):
     api_key = os.getenv("MINIMAX_API_KEY")
     base_url = os.getenv("MINIMAX_OPENAI_BASE_URL")
     if not api_key:
@@ -200,13 +200,19 @@ def call_minimax_openai(model, history, prompt, b64_images, system_prompt):
         messages.append({"role": msg["role"], "content": msg["content"]})
         
     user_content = [{"type": "text", "text": prompt}]
-    for b64, mime in b64_images:
-        user_content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime};base64,{b64}"}
-        })
+    for b64, mime in b64_data:
+        if mime and "video" in mime.lower():
+            user_content.append({
+                "type": "video_url",
+                "video_url": {"url": f"data:{mime};base64,{b64}"}
+            })
+        else:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"}
+            })
         
-    content_payload = user_content if b64_images else prompt
+    content_payload = user_content if b64_data else prompt
     messages.append({"role": "user", "content": content_payload})
     
     response = client.chat.completions.create(
@@ -268,7 +274,7 @@ def main():
             if not prompt:
                 prompt = "Hi, how are you?"
             try:
-                reply, thinking = call_minimax_openai(model="MiniMax-M3", history=[], prompt=prompt, b64_images=[], system_prompt="You are a helpful assistant.")
+                reply, thinking = call_minimax_openai(model="MiniMax-M3", history=[], prompt=prompt, b64_data=[], system_prompt="You are a helpful assistant.")
                 if thinking:
                     print(f"Thinking:\n{thinking}\n")
                 print(f"Text:\n{reply}\n")

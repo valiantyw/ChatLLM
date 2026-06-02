@@ -1574,6 +1574,16 @@ class ChatLLM_GUI(tk.Tk):
                     b64_images.append((b64_data, mime))
                 else:
                     text_attachments.append(f"\n\n[附带图片: {filename} (读取失败)]")
+            elif ext in VIDEO_EXTS:
+                b64_data, mime = read_image_base64(filepath)
+                if mime and mime.startswith("image/"):
+                    mime = "video/mp4"
+                elif not mime:
+                    mime = "video/mp4"
+                if b64_data:
+                    b64_images.append((b64_data, mime))
+                else:
+                    text_attachments.append(f"\n\n[附带视频: {filename} (读取失败)]")
             else:
                 try:
                     size_kb = os.path.getsize(filepath) / 1024
