@@ -1,4 +1,4 @@
-from .minimax_api import (
+﻿from .minimax_api import (
     call_minimax_openai, image_MiniMax, music_MiniMax,
     PROVIDERS as MINIMAX_PROVIDERS,
 )
@@ -20,7 +20,7 @@ PROVIDERS.update(NVIDIA_NIM_PROVIDERS)
 # Agnostic constants for defaults
 DEFAULT_PROVIDER = "MiniMax (OpenAI)"
 DEFAULT_MODEL = "MiniMax-M3"
-SHORT_TITLE_PROVIDER = "MiniMax (OpenAI)"
+SHORT_TITLE_PROVIDER = DEFAULT_PROVIDER
 SHORT_TITLE_MODEL = "MiniMax-M2.7"
 MUSIC_MODEL = "music-2.6"
 DEFAULT_IMAGE_MODEL = "image-01"
@@ -40,7 +40,7 @@ def is_music_model(model):
 
 def call_chat_api(provider, model, history, prompt, b64_images, system_prompt):
     """Generic chat completion API router."""
-    if provider in ["MiniMax (Native)", "MiniMax (OpenAI)", "MiniMax (Anthropic)"]:
+    if provider in ["MiniMax (Native)", DEFAULT_PROVIDER, "MiniMax (Anthropic)"]:
         return call_minimax_openai(model, history, prompt, b64_images, system_prompt)
     elif provider == "QuickRouter":
         return call_quickrouter(model, history, prompt, b64_images, system_prompt)

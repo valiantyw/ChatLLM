@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 NVIDIA NIM API - NVIDIA NIM microservices for LLM API
 Docs: https://docs.nvidia.com/nim/
@@ -11,6 +11,13 @@ import dotenv, requests
 # Load environment variables
 dotenv.load_dotenv(dotenv.find_dotenv())
 
+# Constants for duplicate strings
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+DEFAULT_MODEL = "meta/llama-3.1-70b-instruct"
+NVIDIA_NIM_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+ENV_NVIDIA_NIM_BASE_URL = "NVIDIA_NIM_BASE_URL"
+
+
 # Provider models configuration
 PROVIDERS = {
     "NVIDIA NIM": ["meta/llama-4-maverick-17b-128e-instruct", "nvidia/llama-3.3-nemotron-super-49b-v1"],
@@ -19,7 +26,7 @@ PROVIDERS = {
 # ───────────────────────────────────────────────────────────────────────── #
 # 1. Text Generation - NVIDIA NIM (OpenAI compatible)
 # ───────────────────────────────────────────────────────────────────────── #
-def text_NVIDIA(prompt="Hi, how are you?", system_prompt="You are a helpful assistant.", model="meta/llama-3.1-70b-instruct"):
+def text_NVIDIA(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model=DEFAULT_MODEL):
     try:
         from openai import OpenAI
     except ImportError:
@@ -27,7 +34,7 @@ def text_NVIDIA(prompt="Hi, how are you?", system_prompt="You are a helpful assi
         return None
 
     api_key = os.getenv("NVIDIA_API_KEY")
-    base_url = os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    base_url = os.getenv(ENV_NVIDIA_NIM_BASE_URL, NVIDIA_NIM_DEFAULT_BASE_URL)
     if not api_key:
         print("Warning: NVIDIA_API_KEY environment variable is not set.")
         return None
@@ -78,7 +85,7 @@ def call_nvidia_nim(model, history, prompt, b64_images, system_prompt):
         Tuple of (reply_text, thinking_text)
     """
     api_key = os.getenv("NVIDIA_API_KEY")
-    base_url = os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    base_url = os.getenv(ENV_NVIDIA_NIM_BASE_URL, NVIDIA_NIM_DEFAULT_BASE_URL)
     if not api_key:
         raise ValueError("未在环境变量中设置 NVIDIA_API_KEY")
     
@@ -153,8 +160,8 @@ def main():
     print("Testing text generation...")
     result = text_NVIDIA(
         prompt="Hello, who are you?",
-        system_prompt="You are a helpful assistant.",
-        model="meta/llama-3.1-70b-instruct"
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        model=DEFAULT_MODEL
     )
     print(f"Result: {result}")
 

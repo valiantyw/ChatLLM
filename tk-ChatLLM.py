@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 #
 # ChatLLM - Chat LLM application with tkinter GUI mode
 #
@@ -60,6 +60,12 @@ os.makedirs(CONV_DIR, exist_ok=True)
 
 # Default System Prompt
 DEFAULT_SYSTEM_PROMPT = "你是智能助手，始终用中文回复。"
+
+# Constants for duplicate strings
+IMAGE_FILE_FILTER = "图片文件 (*.png;*.jpg;*.jpeg)"
+DATETIME_FORMAT = "%Y-%m-%d-%H%M%S"
+DEFAULT_LYRICS = "美妙的旋律在夜空流淌\n轻风拂过思念的琴弦\n每一个音符都是真挚的向往\n让我们一起歌唱到地久天长"
+
 
 # Helpers for file reading
 def read_text_file(filepath):
@@ -822,6 +828,8 @@ class ChatLLM_GUI(tk.Tk):
         # Render historical chat dialogue
         self.refresh_chat_display()
         self.update_idletasks()
+        self.chat_display.see(tk.END)
+        self.after(100, lambda: self.chat_display.see(tk.END))
 
     def save_session_by_id(self, session_id):
         if not session_id:
@@ -1112,7 +1120,7 @@ class ChatLLM_GUI(tk.Tk):
                                           activebackground="#e2e8f0").pack(side="left", padx=2)
                                 tk.Button(btn_card, text="💾 保存", font=(FONT_UI, 8),
                                           command=lambda u=img_url, dn=img_default_name:
-                                              self.download_and_save_file(u, dn, "图片文件 (*.png;*.jpg;*.jpeg)"),
+                                              self.download_and_save_file(u, dn, IMAGE_FILE_FILTER),
                                           cursor="hand2", relief="flat", bg="#f1f5f9",
                                           activebackground="#e2e8f0").pack(side="left", padx=2)
                                 btn_card.pack()
@@ -1140,7 +1148,7 @@ class ChatLLM_GUI(tk.Tk):
                                 btn_open.pack(side="left", padx=5, pady=2)
                                 
                                 img_default_name = f"{img_ts}-{img_safe_title}{img_ext}"
-                                btn_save = ttk.Button(btn_frame, text="保存图片", command=lambda url=img_url, dn=img_default_name: self.download_and_save_file(url, dn, "图片文件 (*.png;*.jpg;*.jpeg)"))
+                                btn_save = ttk.Button(btn_frame, text="保存图片", command=lambda url=img_url, dn=img_default_name: self.download_and_save_file(url, dn, IMAGE_FILE_FILTER))
                                 btn_save.pack(side="left", padx=5, pady=2)
                                 
                                 self.chat_display.window_create(tk.END, window=btn_frame)
@@ -1221,7 +1229,26 @@ class ChatLLM_GUI(tk.Tk):
                 self.chat_display.insert(tk.END, content + "\n", "system_body")
                 
         self.chat_display.config(state="disabled")
+        self._bind_mousewheel_recursive(self.chat_display)
         self.chat_display.see(tk.END)
+
+    def _bind_mousewheel_recursive(self, widget):
+        for child in widget.winfo_children():
+            # Bind MouseWheel to redirect to chat_display
+            child.bind("<MouseWheel>", self._on_child_mousewheel, add="+")
+            child.bind("<Button-4>", self._on_child_mousewheel, add="+")
+            child.bind("<Button-5>", self._on_child_mousewheel, add="+")
+            self._bind_mousewheel_recursive(child)
+
+    def _on_child_mousewheel(self, event):
+        if event.num == 4:
+            self.chat_display.yview_scroll(-2, "units")
+        elif event.num == 5:
+            self.chat_display.yview_scroll(2, "units")
+        elif event.delta:
+            scroll_units = -1 * int(event.delta / 120) * 3
+            self.chat_display.yview_scroll(scroll_units, "units")
+        return "break"
 
     def _make_thumbnail_label(self, parent, cache_path, max_w=200):
         """Create a tk.Label with a fitted thumbnail from a cached image."""
@@ -1699,7 +1726,7 @@ class ChatLLM_GUI(tk.Tk):
                 slug = self._generate_short_title(first_line, max_len=10)
                 safe_slug = self._sanitize_filename(slug)
                 if safe_slug and safe_slug != "_":
-                    ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+                    ts = datetime.now().strftime(DATETIME_FORMAT)
                     final_id = f"{ts}-{safe_slug}"
                     old_path = os.path.join(CONV_DIR, f"{current_id}.json")
                     if os.path.exists(old_path):
@@ -1790,7 +1817,7 @@ class ChatLLM_GUI(tk.Tk):
             old_session_id = self.current_session_id
             
             # 1. 自动提取原本的时间戳前缀并组装包含新 AI 摘要的安全文件名/ID
-            ts = old_session_id[:17] if len(old_session_id) >= 17 else datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            ts = old_session_id[:17] if len(old_session_id) >= 17 else datetime.now().strftime(DATETIME_FORMAT)
             safe_ai_slug = self._sanitize_filename(ai_title)
             new_session_id = f"{ts}-{safe_ai_slug}"
             
@@ -2361,10 +2388,10 @@ class ChatLLM_GUI(tk.Tk):
                     if lyric_gen and lyric_gen.strip():
                         lyrics = lyric_gen.strip()
                     else:
-                        lyrics = "美妙的旋律在夜空流淌\n轻风拂过思念的琴弦\n每一个音符都是真挚的向往\n让我们一起歌唱到地久天长"
+                        lyrics = DEFAULT_LYRICS
                 except Exception as ex:
                     print(f"Auto-generate lyrics error: {ex}")
-                    lyrics = "美妙的旋律在夜空流淌\n轻风拂过思念的琴弦\n每一个音符都是真挚的向往\n让我们一起歌唱到地久天长"
+                    lyrics = DEFAULT_LYRICS
 
             self.after(0, lambda: self.update_status("正在生成音乐，请稍候..."))
             provider = self.provider_combo.get()

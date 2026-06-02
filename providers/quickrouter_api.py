@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 QuickRouter API - OpenAI compatible LLM API integration
 Docs: https://doc.quickrouter.ai/
@@ -15,6 +15,12 @@ if env_path:
 else:
     dotenv.load_dotenv()  # Try default locations
 
+# Constants for duplicate strings
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+ERROR_OPENAI_SDK = "Error: Please install the 'openai' SDK first: pip install openai"
+WARNING_API_KEY_MISSING = "Warning: QUICKROUTER_API_KEY environment variable is not set."
+QUICKROUTER_DEFAULT_BASE_URL = "https://api.quickrouter.ai/v1"
+
 # Provider models configuration
 PROVIDERS = {
     "QuickRouter": [
@@ -27,17 +33,17 @@ PROVIDERS = {
 # ───────────────────────────────────────────────────────────────────────── #
 # 1. Text Generation - QuickRouter (OpenAI compatible)
 # ───────────────────────────────────────────────────────────────────────── #
-def text_QuickRouter(prompt="Hi, how are you?", system_prompt="You are a helpful assistant.", model="gpt-4o"):
+def text_QuickRouter(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model="gpt-4o"):
     try:
         from openai import OpenAI
     except ImportError:
-        print("Error: Please install the 'openai' SDK first: pip install openai")
+        print(ERROR_OPENAI_SDK)
         return None
 
     api_key = os.getenv("QUICKROUTER_API_KEY")
     base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
     if not api_key:
-        print("Warning: QUICKROUTER_API_KEY environment variable is not set.")
+        print(WARNING_API_KEY_MISSING)
         return None
 
     client = OpenAI(api_key=api_key, base_url=base_url)
@@ -70,7 +76,7 @@ def image_QuickRouter(prompt="A beautiful sunset over the ocean", model="dall-e-
     api_key = os.getenv("QUICKROUTER_API_KEY")
     base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
     if not api_key:
-        print("Warning: QUICKROUTER_API_KEY environment variable is not set.")
+        print(WARNING_API_KEY_MISSING)
         return None
 
     client = OpenAI(api_key=api_key, base_url=base_url)
@@ -184,7 +190,7 @@ def main():
     print("Testing text generation...")
     result = text_QuickRouter(
         prompt="Hello, who are you?",
-        system_prompt="You are a helpful assistant.",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
         model="gpt-4o"
     )
     print(f"Result: {result}")

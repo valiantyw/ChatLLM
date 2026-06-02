@@ -4,6 +4,15 @@ import dotenv, requests
 # Load environment variables
 dotenv.load_dotenv(dotenv.find_dotenv())
 
+# Constants for duplicate strings
+DEFAULT_IMAGE_PROMPT = "A man in a white t-shirt, full-body, standing front view, outdoors, with the Venice Beach sign in the background, Los Angeles. Fashion photography in 90s documentary style, film grain, photorealistic."
+DEFAULT_MUSIC_PROMPT = "Mandopop, Festive, Upbeat, Celebration, New Year"
+WARNING_API_KEY_MISSING = "Warning: MINIMAX_API_KEY environment variable is not set."
+MINIMAX_DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"
+ENV_MINIMAX_API_KEY = "MINIMAX_API_KEY"
+ENV_MINIMAX_BASE_URL = "MINIMAX_BASE_URL"
+
+
 # Provider models configuration
 PROVIDERS = {
     "MiniMax (OpenAI)": ["MiniMax-M3", "music-2.6", "image-01"],
@@ -101,13 +110,13 @@ DEFAULT_LYRICS = """[Intro]
 # ──────────────────────────────────────────────────────────────────────── #
 # 1. Image Generation - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
-def image_MiniMax(prompt="A man in a white t-shirt, full-body, standing front view, outdoors, with the Venice Beach sign in the background, Los Angeles. Fashion photography in 90s documentary style, film grain, photorealistic.", model="image-01", aspect_ratio="16:9", response_format="url", n=1, prompt_optimizer=True, subject_reference=None):
-    base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+def image_MiniMax(prompt=DEFAULT_IMAGE_PROMPT, model="image-01", aspect_ratio="16:9", response_format="url", n=1, prompt_optimizer=True, subject_reference=None):
+    base_url = os.getenv(ENV_MINIMAX_BASE_URL, MINIMAX_DEFAULT_BASE_URL)
     url = f"{base_url}/image_generation"
 
-    api_key = os.getenv("MINIMAX_API_KEY")
+    api_key = os.getenv(ENV_MINIMAX_API_KEY)
     if not api_key:
-        print("Warning: MINIMAX_API_KEY environment variable is not set.")
+        print(WARNING_API_KEY_MISSING)
 
     headers = {
         "Content-Type": "application/json",
@@ -138,13 +147,13 @@ def image_MiniMax(prompt="A man in a white t-shirt, full-body, standing front vi
 # ──────────────────────────────────────────────────────────────────────── #
 # 2. Music Generation - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
-def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyrics=None, model="music-2.6", sample_rate=44100, bitrate=256000, audio_format="mp3", output_format="url", audio_url=None, audio_base64=None):
-    base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+def music_MiniMax(prompt=DEFAULT_MUSIC_PROMPT, lyrics=None, model="music-2.6", sample_rate=44100, bitrate=256000, audio_format="mp3", output_format="url", audio_url=None, audio_base64=None):
+    base_url = os.getenv(ENV_MINIMAX_BASE_URL, MINIMAX_DEFAULT_BASE_URL)
     url = f"{base_url}/music_generation"
 
-    api_key = os.getenv("MINIMAX_API_KEY")
+    api_key = os.getenv(ENV_MINIMAX_API_KEY)
     if not api_key:
-        print("Warning: MINIMAX_API_KEY environment variable is not set.")
+        print(WARNING_API_KEY_MISSING)
 
     headers = {
         "Content-Type": "application/json",
@@ -184,7 +193,7 @@ def music_MiniMax(prompt="Mandopop, Festive, Upbeat, Celebration, New Year", lyr
 # 3. Text Generation (OpenAI SDK) - Chat Integration Method
 # ──────────────────────────────────────────────────────────────────────── #
 def call_minimax_openai(model, history, prompt, b64_data, system_prompt):
-    api_key = os.getenv("MINIMAX_API_KEY")
+    api_key = os.getenv(ENV_MINIMAX_API_KEY)
     base_url = os.getenv("MINIMAX_OPENAI_BASE_URL")
     if not api_key:
         raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
@@ -285,7 +294,7 @@ def main():
             print("\n--- 2. 图像生成 - 体验文生图 ---")
             prompt = input("请输入图像提示词 [回车使用默认 Venice Beach 摄影风格]: ").strip()
             if not prompt:
-                prompt = "A man in a white t-shirt, full-body, standing front view, outdoors, with the Venice Beach sign in the background, Los Angeles. Fashion photography in 90s documentary style, film grain, photorealistic."
+                prompt = DEFAULT_IMAGE_PROMPT
             n_str = input("请输入生成张数 (1-9) [回车默认: 1]: ").strip()
             n = int(n_str) if n_str.isdigit() else 1
             result = image_MiniMax(prompt=prompt, n=n)
@@ -295,7 +304,7 @@ def main():
             print("\n--- 3. 音乐生成 - 体验歌词编曲 ---")
             prompt = input("请输入音乐风格提示词 [回车使用默认: 'Mandopop, Festive, Upbeat, Celebration, New Year']: ").strip()
             if not prompt:
-                prompt = "Mandopop, Festive, Upbeat, Celebration, New Year"
+                prompt = DEFAULT_MUSIC_PROMPT
             use_default_lyrics = input("是否使用默认新年喜庆歌词？(Y/N) [回车默认: Y]: ").strip().upper()
             lyrics = None
             if use_default_lyrics == "N":
