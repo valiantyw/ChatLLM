@@ -147,8 +147,21 @@ class ChatLLM_GUI(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        # Enable frameless window design
-        self.overrideredirect(True)
+        # Enable frameless window design based on platform
+        if sys.platform == "win32":
+            self.overrideredirect(True)
+        elif sys.platform == "darwin":
+            # For macOS: Use MacWindowStyle to get frameless window that is focusable and shows in Dock
+            try:
+                self.tk.call("::tk::unsupported::MacWindowStyle", "style", self._w, "help", "none")
+            except Exception:
+                self.overrideredirect(True)
+        else:
+            # For Linux and others: Use 'splash' type to get a focusable frameless window
+            try:
+                self.attributes('-type', 'splash')
+            except Exception:
+                self.overrideredirect(True)
         self.title("ChatLLM - 智能助手")
         self.withdraw()  # hide until positioned
         
@@ -222,13 +235,28 @@ class ChatLLM_GUI(tk.Tk):
         # Right: Close / Maximise / Minimise buttons
         def _close():    self._on_close()
         def _minimize():
-            self.overrideredirect(False)
-            self.state("iconic")
-            def _on_map(e=None):
-                if self.state() == "normal":
-                    self.overrideredirect(True)
-                    self.unbind("<Map>")
-            self.bind("<Map>", _on_map)
+            if sys.platform == "win32":
+                self.overrideredirect(False)
+                self.state("iconic")
+                def _on_map(e=None):
+                    if self.state() == "normal":
+                        self.overrideredirect(True)
+                        self.after(100, self._fix_taskbar)
+                        self.unbind("<Map>")
+                self.bind("<Map>", _on_map)
+            elif sys.platform == "darwin":
+                self.state("iconic")
+            else:
+                try:
+                    self.state("iconic")
+                except Exception:
+                    self.overrideredirect(False)
+                    self.state("iconic")
+                    def _on_map(e=None):
+                        if self.state() == "normal":
+                            self.overrideredirect(True)
+                            self.unbind("<Map>")
+                    self.bind("<Map>", _on_map)
         def _toggle_max():
             self.state("normal" if self.state() == "zoomed" else "zoomed")
 
@@ -629,7 +657,7 @@ class ChatLLM_GUI(tk.Tk):
         return "break"
 
     def _fix_taskbar(self):
-        if os.name == 'nt':
+        if sys.platform == 'win32':
             import ctypes
             try:
                 GWL_EXSTYLE = -20
@@ -644,8 +672,9 @@ class ChatLLM_GUI(tk.Tk):
                 style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
                 ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
                 
-                # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004)
+                # Force Windows to re-evaluate taskbar icon presence
+                self.withdraw()
+                self.deiconify()
             except Exception as e:
                 print(f"Error fixing taskbar: {e}")
 
