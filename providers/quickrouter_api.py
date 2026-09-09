@@ -5,176 +5,88 @@ Docs: https://doc.quickrouter.ai/
 Console: https://api.quickrouter.ai/console
 """
 
-import os, sys, json
-import dotenv, requests
+import os
 
-# Load environment variables - find .env in project directory or parent
-env_path = dotenv.find_dotenv(os.path.join(os.path.dirname(__file__), '../../.env'))
-if env_path:
-    dotenv.load_dotenv(env_path)
+if __package__:
+    from . import ModelCapabilities, ProviderError, capabilities, chat_completion, get_client, normalize_images, read_provider_settings
 else:
-    dotenv.load_dotenv()  # Try default locations
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from providers import ModelCapabilities, ProviderError, capabilities, chat_completion, get_client, normalize_images, read_provider_settings
 
 # Constants for duplicate strings
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 ERROR_OPENAI_SDK = "Error: Please install the 'openai' SDK first: pip install openai"
-WARNING_API_KEY_MISSING = "Warning: QUICKROUTER_API_KEY environment variable is not set."
-QUICKROUTER_DEFAULT_BASE_URL = "https://api.quickrouter.ai/v1"
+PROVIDER_NAME = "QuickRouter"
+DISPLAY_ORDER = 20
 
-# Provider models configuration
-PROVIDERS = {
-    "QuickRouter": [
-        "gpt-5.4-mini", 
-        "gpt-image-2", 
-        "gemini-3.1-flash-image-preview", 
-    ],
+MODELS = {
+    PROVIDER_NAME: {
+        "gpt-5.4-mini": ModelCapabilities(images=True),
+        "gpt-image-2": ModelCapabilities(
+            kind="image", max_count=10, streaming=False,
+            ratios=("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+            sizes=("1024x1024", "1536x864", "864x1536", "1536x1152", "1152x1536", "1536x1024", "1024x1536", "1792x768"),
+        ),
+        "gemini-3.1-flash-image-preview": ModelCapabilities(
+            kind="image", streaming=False, ratios=("1:1",), sizes=("1024x1024",),
+        ),
+    },
 }
+PROVIDERS = {provider: list(models) for provider, models in MODELS.items()}
+
+
+def provider_settings(native=False):
+    return read_provider_settings("QUICKROUTER_API_KEY", "QUICKROUTER_BASE_URL")
+
 
 # ───────────────────────────────────────────────────────────────────────── #
 # 1. Text Generation - QuickRouter (OpenAI compatible)
 # ───────────────────────────────────────────────────────────────────────── #
-def text_QuickRouter(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model="gpt-4o"):
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(ERROR_OPENAI_SDK)
-        return None
-
-    api_key = os.getenv("QUICKROUTER_API_KEY")
-    base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
-    if not api_key:
-        print(WARNING_API_KEY_MISSING)
-        return None
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-    )
-
-    result_text = response.choices[0].message.content or ""
-    print(f"Text:\n{result_text}\n")
-    return {"text": result_text}
+def text_QuickRouter(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model="gpt-5.4-mini"):
+    reply, _ = call_quickrouter(model, [], prompt, [], system_prompt)
+    return {"text": reply}
 
 
 # ───────────────────────────────────────────────────────────────────────── #
 # 2. Image Generation - QuickRouter
 # ───────────────────────────────────────────────────────────────────────── #
-def image_QuickRouter(prompt="A beautiful sunset over the ocean", model="dall-e-3", size="1024x1024", response_format="url"):
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("Error: Please install the 'openai' SDK first: pip install openai")
-        return None
-
-    api_key = os.getenv("QUICKROUTER_API_KEY")
-    base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
-    if not api_key:
-        print(WARNING_API_KEY_MISSING)
-        return None
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    response = client.images.generate(
-        model=model,
-        prompt=prompt,
-        size=size,
-        response_format=response_format,
-    )
-
+def image_QuickRouter(prompt="A beautiful sunset over the ocean", model="gpt-image-2", size="1024x1024", response_format=None, n=1):
+    if not prompt.strip() or len(prompt) > 32000:
+        raise ProviderError("Image prompt must contain 1-32000 characters")
+    options = dict(model=model, prompt=prompt, size=size, n=n)
+    if response_format is not None:
+        options["response_format"] = response_format
+    response = get_client(PROVIDER_NAME).images.generate(**options)
     return response.model_dump()
+
+
+def call_image_api(prompt, model, aspect_ratio="1:1", n=1, prompt_optimizer=True, subject_reference=None):
+    spec = capabilities(PROVIDER_NAME, model)
+    result = image_QuickRouter(
+        prompt=prompt, model=model,
+        size=dict(zip(spec.ratios, spec.sizes))[aspect_ratio], n=n,
+    )
+    return {"images": normalize_images(result)}
 
 
 # ───────────────────────────────────────────────────────────────────────── #
 # Core Chat Integration Method
 # ───────────────────────────────────────────────────────────────────────── #
-def call_quickrouter(model, history, prompt, b64_images, system_prompt):
-    """
-    QuickRouter chat completion function.
-    
-    Args:
-        model: Model name (e.g., "gpt-4o", "claude-3-opus", "gemini-2.0-flash")
-        history: List of previous messages [{"role": "user/assistant", "content": "..."}]
-        prompt: Current user prompt
-        b64_images: List of (base64_data, mime_type) tuples for image inputs
-        system_prompt: System prompt to set behavior
-    
-    Returns:
-        Tuple of (reply_text, thinking_text)
-    """
-    api_key = os.getenv("QUICKROUTER_API_KEY")
-    base_url = os.getenv("QUICKROUTER_BASE_URL", "https://api.quickrouter.ai/v1")
-    if not api_key:
-        raise ValueError("未在环境变量中设置 QUICKROUTER_API_KEY")
-    
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    
-    # Add history messages
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    
-    # Build user message with image support
-    if b64_images:
-        user_content = []
-        user_content.append({"type": "text", "text": prompt})
-        for b64, mime in b64_images:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-        messages.append({"role": "user", "content": user_content})
-    else:
-        messages.append({"role": "user", "content": prompt})
-    
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        timeout=300,
-    )
-    
-    # Handle case where API returns error string instead of proper response
-    if isinstance(response, str):
-        raise ValueError(f"QuickRouter API returned error: {response}")
-    
-    if not hasattr(response, 'choices') or not response.choices:
-        raise ValueError(f"QuickRouter API returned invalid response: {response}")
-    
-    reply = response.choices[0].message.content or ""
-    thinking = ""
-    
-    # Check for reasoning/thinking in response
-    msg_obj = response.choices[0].message
-    if hasattr(msg_obj, "reasoning_details") and msg_obj.reasoning_details:
-        try:
-            if isinstance(msg_obj.reasoning_details, list) and len(msg_obj.reasoning_details) > 0:
-                detail = msg_obj.reasoning_details[0]
-                if isinstance(detail, dict) and 'text' in detail:
-                    thinking = detail['text']
-                elif hasattr(detail, 'text'):
-                    thinking = detail.text
-                elif isinstance(detail, str):
-                    thinking = detail
-        except Exception:
-            pass
-    
-    return reply, thinking
+def call_quickrouter(model, history, prompt, b64_images, system_prompt, **options):
+    return chat_completion(PROVIDER_NAME, model, history, prompt, b64_images, system_prompt, **options)
+
+call_chat_api = call_quickrouter
 
 
 # ───────────────────────────────────────────────────────────────────────── #
 # Main Interactive Menu (for testing)
 # ───────────────────────────────────────────────────────────────────────── #
 def main():
+    from pathlib import Path
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
     print("QuickRouter API - Testing Menu")
     print("=" * 50)
     
@@ -183,15 +95,13 @@ def main():
         print("Please set QUICKROUTER_API_KEY in your .env file")
         return
     
-    print(f"API Key: {api_key[:10]}...")
-    print()
     
     # Test text generation
     print("Testing text generation...")
     result = text_QuickRouter(
         prompt="Hello, who are you?",
         system_prompt=DEFAULT_SYSTEM_PROMPT,
-        model="gpt-4o"
+        model="gpt-5.4-mini"
     )
     print(f"Result: {result}")
 

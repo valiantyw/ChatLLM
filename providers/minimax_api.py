@@ -1,22 +1,53 @@
-﻿import os, sys, json
-import dotenv, requests
+﻿import json
+import requests
 
-# Load environment variables
-dotenv.load_dotenv(dotenv.find_dotenv())
+if __package__:
+    from . import ModelCapabilities, ProviderError, chat_completion, normalize_images, read_provider_settings, request_timeout, tls_verify
+else:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from providers import ModelCapabilities, ProviderError, chat_completion, normalize_images, read_provider_settings, request_timeout, tls_verify
 
 # Constants for duplicate strings
+PROVIDER_NAME = "MiniMax (OpenAI)"
+DISPLAY_ORDER = 10
+ALIASES = {
+    "MiniMax (Native)": PROVIDER_NAME, 
+    "MiniMax (Anthropic)": PROVIDER_NAME
+}
+CHAT_EXTRA_BODY = {"reasoning_split": True}
+_stream_mode = "auto"
+
+
+MODELS = {
+    PROVIDER_NAME: {
+        "MiniMax-M3": ModelCapabilities(images=True, video=True),
+        "music-2.6": ModelCapabilities(kind="music", streaming=False),
+        "image-01": ModelCapabilities(
+            kind="image", max_count=9, streaming=False, reference_images=True,
+            ratios=("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+        ),
+    },
+}
+PROVIDERS = {provider: list(models) for provider, models in MODELS.items()}
+
+
+def provider_settings(native=False):
+    return read_provider_settings(
+        "MINIMAX_API_KEY", "MINIMAX_BASE_URL" if native else "MINIMAX_OPENAI_BASE_URL",
+    )
+
+
+def configure_runtime(stream_mode):
+    global _stream_mode
+    if stream_mode not in {"auto", "delta", "cumulative"}:
+        raise ProviderError("MINIMAX_STREAM_MODE must be auto, delta, or cumulative")
+    _stream_mode = stream_mode
+
+
 DEFAULT_IMAGE_PROMPT = "A man in a white t-shirt, full-body, standing front view, outdoors, with the Venice Beach sign in the background, Los Angeles. Fashion photography in 90s documentary style, film grain, photorealistic."
 DEFAULT_MUSIC_PROMPT = "Mandopop, Festive, Upbeat, Celebration, New Year"
-WARNING_API_KEY_MISSING = "Warning: MINIMAX_API_KEY environment variable is not set."
-MINIMAX_DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"
-ENV_MINIMAX_API_KEY = "MINIMAX_API_KEY"
-ENV_MINIMAX_BASE_URL = "MINIMAX_BASE_URL"
-
-
-# Provider models configuration
-PROVIDERS = {
-    "MiniMax (OpenAI)": ["MiniMax-M3", "music-2.6", "image-01"],
-}
 
 DEFAULT_LYRICS = """[Intro]
 嘿！新年到！
@@ -110,19 +141,30 @@ DEFAULT_LYRICS = """[Intro]
 # ──────────────────────────────────────────────────────────────────────── #
 # 1. Image Generation - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
+def native_post(endpoint, payload):
+    api_key, base_url = provider_settings(native=True)
+    response = requests.post(
+        f'{base_url}/{endpoint}', json=payload,
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        timeout=request_timeout(), verify=tls_verify(), allow_redirects=False,
+    )
+    try:
+        if not 200 <= response.status_code < 300:
+            raise ProviderError(f'Provider request failed (HTTP {response.status_code})')
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ProviderError('Provider returned an invalid JSON response')
+        status = data.get('base_resp') or {}
+        if status.get('status_code', 0) != 0:
+            raise ProviderError(f"Provider rejected the request (code {status['status_code']})")
+        return data
+    finally:
+        response.close()
+
+
 def image_MiniMax(prompt=DEFAULT_IMAGE_PROMPT, model="image-01", aspect_ratio="16:9", response_format="url", n=1, prompt_optimizer=True, subject_reference=None):
-    base_url = os.getenv(ENV_MINIMAX_BASE_URL, MINIMAX_DEFAULT_BASE_URL)
-    url = f"{base_url}/image_generation"
-
-    api_key = os.getenv(ENV_MINIMAX_API_KEY)
-    if not api_key:
-        print(WARNING_API_KEY_MISSING)
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
+    if not prompt.strip() or len(prompt) > 1500:
+        raise ProviderError("Image prompt must contain 1-1500 characters")
     payload = {
         "model": model,
         "prompt": prompt,
@@ -135,33 +177,32 @@ def image_MiniMax(prompt=DEFAULT_IMAGE_PROMPT, model="image-01", aspect_ratio="1
     if subject_reference:
         payload["subject_reference"] = subject_reference
 
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code != 200:
-        print(f"Error calling image API: HTTP {response.status_code}")
-        print(response.text)
-        return None
+    return native_post("image_generation", payload)
 
-    data = response.json()
-    return data
+
+def call_image_api(prompt, model, aspect_ratio="16:9", n=1, prompt_optimizer=True, subject_reference=None):
+    result = image_MiniMax(
+        prompt=prompt, model=model, aspect_ratio=aspect_ratio, n=n,
+        prompt_optimizer=prompt_optimizer, subject_reference=subject_reference,
+    )
+    data = result.get("data")
+    if not isinstance(data, dict):
+        raise ProviderError("MiniMax returned invalid image data")
+    if isinstance(data.get("image_base64"), list):
+        images = [{"b64_json": encoded} for encoded in data["image_base64"]]
+    else:
+        images = data.get("image_urls", [])
+    return {"images": normalize_images({"data": images})}
+
 
 # ──────────────────────────────────────────────────────────────────────── #
 # 2. Music Generation - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
 def music_MiniMax(prompt=DEFAULT_MUSIC_PROMPT, lyrics=None, model="music-2.6", sample_rate=44100, bitrate=256000, audio_format="mp3", output_format="url", audio_url=None, audio_base64=None):
-    base_url = os.getenv(ENV_MINIMAX_BASE_URL, MINIMAX_DEFAULT_BASE_URL)
-    url = f"{base_url}/music_generation"
-
-    api_key = os.getenv(ENV_MINIMAX_API_KEY)
-    if not api_key:
-        print(WARNING_API_KEY_MISSING)
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
     if not lyrics:
         lyrics = DEFAULT_LYRICS
+    if len(prompt) > 2000 or not 1 <= len(lyrics) <= 3500:
+        raise ProviderError("Music requires a prompt of at most 2000 characters and lyrics of 1-3500 characters")
 
     payload = {
         "model": model,
@@ -180,84 +221,26 @@ def music_MiniMax(prompt=DEFAULT_MUSIC_PROMPT, lyrics=None, model="music-2.6", s
     if audio_base64:
         payload["audio_base64"] = audio_base64
 
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code != 200:
-        print(f"Error calling music API: HTTP {response.status_code}")
-        print(response.text)
-        return None
-
-    data = response.json()
-    return data
+    return native_post("music_generation", payload)
 
 # ──────────────────────────────────────────────────────────────────────── #
 # 3. Text Generation (OpenAI SDK) - Chat Integration Method
 # ──────────────────────────────────────────────────────────────────────── #
-def call_minimax_openai(model, history, prompt, b64_data, system_prompt):
-    api_key = os.getenv(ENV_MINIMAX_API_KEY)
-    base_url = os.getenv("MINIMAX_OPENAI_BASE_URL")
-    if not api_key:
-        raise ValueError("未在环境变量中设置 MINIMAX_API_KEY")
-        
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-        
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-        
-    user_content = [{"type": "text", "text": prompt}]
-    for b64, mime in b64_data:
-        if mime and "video" in mime.lower():
-            user_content.append({
-                "type": "video_url",
-                "video_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-        else:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"}
-            })
-        
-    content_payload = user_content if b64_data else prompt
-    messages.append({"role": "user", "content": content_payload})
-    
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        timeout=300,
-        extra_body={"reasoning_split": True}
-    )
-    
-    reply = response.choices[0].message.content or ""
-    thinking = ""
-    
-    msg_obj = response.choices[0].message
-    if hasattr(msg_obj, "reasoning_details") and msg_obj.reasoning_details:
-        try:
-            if isinstance(msg_obj.reasoning_details, list) and len(msg_obj.reasoning_details) > 0:
-                detail = msg_obj.reasoning_details[0]
-                if isinstance(detail, dict) and 'text' in detail:
-                    thinking = detail['text']
-                elif hasattr(detail, 'text'):
-                    thinking = detail.text
-                elif isinstance(detail, str):
-                    thinking = detail
-        except Exception:
-            pass
-            
-    return reply, thinking
+def call_minimax_openai(model, history, prompt, b64_data, system_prompt, **options):
+    options.setdefault("extra_body", CHAT_EXTRA_BODY.copy())
+    options.setdefault("stream_mode", _stream_mode)
+    return chat_completion(PROVIDER_NAME, model, history, prompt, b64_data, system_prompt, **options)
+
+call_chat_api = call_minimax_openai
+call_music_api = music_MiniMax
 
 # ──────────────────────────────────────────────────────────────────────── #
 # Main Interactive Menu
 # ──────────────────────────────────────────────────────────────────────── #
 def main():
-    env_path = dotenv.find_dotenv()
-    if env_path:
-        dotenv.load_dotenv(env_path)
-        print(f"Loaded environment variables from {env_path}")
+    from pathlib import Path
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
 
     while True:
         print("\n" + "=" * 25 + " MiniMax API 整合接口测试 " + "=" * 25)
