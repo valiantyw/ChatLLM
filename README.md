@@ -45,6 +45,11 @@ errors require a trusted CA configuration, not disabled verification.
 
 ## Data
 
-History, attachment snapshots, and media cache are stored in `conversations/`.
-Existing history remains compatible. Data is not encrypted: back up the whole
-directory and do not commit it or `.env`. Use one app instance per data directory.
+History uses one JSON file per conversation in `conversations/`, alongside
+`attachments/` snapshots and `cache/` media. Changed conversations use compact,
+atomic JSON writes; unchanged saves are skipped. Existing files remain compatible.
+Startup scans history into summaries; message bodies load on selection, with the
+eight most recently used conversations cached (active or unsaved work stays loaded).
+Deleting a conversation leaves shared attachments/media intact; no automatic
+cleanup is performed. Data is not encrypted: back up the whole directory and do
+not commit it or `.env`. Use one app instance per data directory.

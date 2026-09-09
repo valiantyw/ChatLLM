@@ -52,6 +52,22 @@ class SessionStore:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.issues = []
+        self._saved_states = {}
+
+    @staticmethod
+    def _content_digest(record):
+        content = dict(record)
+        content.pop('updated_at', None)
+        serialized = json.dumps(content, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+        return hashlib.sha256(serialized.encode('utf-8')).digest()
+
+    @staticmethod
+    def _file_stamp(path):
+        try:
+            stat = path.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except FileNotFoundError:
+            return None
 
     def _path(self, session_id):
         if not isinstance(session_id, str) or not session_id or any(character in session_id for character in '/\\\x00:'):
@@ -90,6 +106,7 @@ class SessionStore:
                 record = json.load(source)
             if not isinstance(record, dict) or not isinstance(record.get('messages'), list):
                 raise ValueError('Expected a conversation object with a messages list')
+            saved_state = self._content_digest(record), self._file_stamp(path)
             for field in ('title', 'provider', 'model', 'system_prompt', 'draft', 'draft_lyrics'):
                 if field in record and not isinstance(record[field], str):
                     raise ValueError(f'Invalid conversation field: {field}')
@@ -141,39 +158,49 @@ class SessionStore:
             record.setdefault('draft', '')
             record.setdefault('draft_attachments', [])
             record.setdefault('draft_lyrics', '')
+            self._saved_states[session_id] = saved_state
             return record
         except (OSError, ValueError, TypeError) as error:
             raise SessionStoreError(f'Cannot read conversation {path.name}: {error}') from error
 
-    def scan(self):
+    @staticmethod
+    def summary(record):
+        return {field: record[field] for field in ('id', 'title', 'created_at', 'updated_at')}
+
+    def scan(self, summaries_only=False):
         self.issues = []
         records = []
         for path in self.directory.glob('*.json'):
             if path.name == 'index.json':
                 continue
             try:
-                records.append(self.load(path.stem))
+                record = self.load(path.stem)
+                records.append(self.summary(record) if summaries_only else record)
             except SessionStoreError as error:
                 self.issues.append(str(error))
         return sorted(records, key=lambda record: str(record['created_at']), reverse=True)
 
     def save(self, record):
         path = self._path(record['id'])
-        snapshot = copy.deepcopy(record)
-        snapshot['schema_version'] = self.SCHEMA_VERSION
-        snapshot['updated_at'] = datetime.now().isoformat()
         temporary_path = None
         try:
+            snapshot = dict(record)
+            snapshot['schema_version'] = self.SCHEMA_VERSION
+            digest = self._content_digest(snapshot)
+            if self._saved_states.get(record['id']) == (digest, self._file_stamp(path)):
+                return
+            snapshot['updated_at'] = datetime.now().isoformat()
             with tempfile.NamedTemporaryFile(
                 mode='w', encoding='utf-8', dir=self.directory,
                 prefix=f'.{path.stem}-', suffix='.tmp', delete=False,
             ) as target:
                 temporary_path = Path(target.name)
-                json.dump(snapshot, target, ensure_ascii=False, indent=2)
+                json.dump(snapshot, target, ensure_ascii=False, separators=(',', ':'))
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(temporary_path, path)
             record['updated_at'] = snapshot['updated_at']
+            self._saved_states[record['id']] = digest, self._file_stamp(path)
         except (OSError, ValueError, TypeError) as error:
             raise SessionStoreError(f'Cannot save conversation {path.name}: {error}') from error
         finally:
@@ -183,6 +210,7 @@ class SessionStore:
     def delete(self, session_id):
         try:
             self._path(session_id).unlink(missing_ok=True)
+            self._saved_states.pop(session_id, None)
         except OSError as error:
             raise SessionStoreError(f'Cannot delete conversation: {error}') from error
 
@@ -967,6 +995,8 @@ NEW_SESSION = '\u65b0\u4f1a\u8bdd'
 
 
 class ChatLLM_GUI(tk.Tk):
+    MAX_LOADED_SESSIONS = 8
+
     def __init__(self, data_dir=None, frameless=True):
         super().__init__()
         self.withdraw()
@@ -984,7 +1014,8 @@ class ChatLLM_GUI(tk.Tk):
         self.attachment_store = AttachmentStore(directory / 'attachments')
         self.service = ConversationService(self.attachment_store, self.media_cache)
         self.runner = TaskRunner()
-        self._session_records = {}
+        self._session_records = OrderedDict()
+        self._session_summaries = {}
         self.current_session_id = None
         self.current_messages = []
         self.sessions = []
@@ -1193,13 +1224,15 @@ class ChatLLM_GUI(tk.Tk):
             self.status_bar.config(text=text)
 
     def _session_title_from_id(self, session_id):
-        title = self._session_records.get(session_id, {}).get('title')
+        record = self._session_records.get(session_id, self._session_summaries.get(session_id, {}))
+        title = record.get('title')
         return title if title and title != 'New conversation' else NEW_SESSION
 
     def load_all_sessions(self):
         self._loading_flag = True
-        records = self.session_store.scan()
-        self._session_records = {record['id']: record for record in records}
+        records = self.session_store.scan(summaries_only=True)
+        self._session_summaries = {record['id']: record for record in records}
+        self._session_records = OrderedDict()
         self.sessions = [record['id'] for record in records]
         self.new_session()
         self.refresh_listbox_titles()
@@ -1222,13 +1255,25 @@ class ChatLLM_GUI(tk.Tk):
     def _has_content(record):
         return bool(record['messages'] or record.get('draft') or record.get('draft_attachments') or record.get('draft_lyrics'))
 
+    def _trim_session_cache(self):
+        if len(self._session_records) <= self.MAX_LOADED_SESSIONS:
+            return
+        protected = {self.current_session_id} | set(self._active_requests) | self._dirty_sessions
+        protected.update(task['session_id'] for task in self._tasks.values())
+        for session_id in list(self._session_records):
+            if len(self._session_records) <= self.MAX_LOADED_SESSIONS:
+                break
+            if session_id not in protected:
+                self._session_records.pop(session_id)
+
     def _persist_record(self, session_id, notify=True):
         record = self._session_records.get(session_id)
-        if record is None or not self._has_content(record):
+        if record is None or (not self._has_content(record) and session_id not in self.sessions):
             return True
         self._dirty_sessions.add(session_id)
         try:
             self.session_store.save(record)
+            self._session_summaries[session_id] = self.session_store.summary(record)
             self._dirty_sessions.discard(session_id)
             if session_id not in self.sessions:
                 self.sessions.insert(0, session_id)
@@ -1249,9 +1294,10 @@ class ChatLLM_GUI(tk.Tk):
         if self._closing:
             return
         record = self._capture_current()
-        if record is not None and self._has_content(record):
-            self._persist_record(record['id'], notify=False)
-        for session_id in set(self._active_requests) | set(self._dirty_sessions):
+        pending = set(self._active_requests) | set(self._dirty_sessions)
+        if record is not None:
+            pending.add(record['id'])
+        for session_id in pending:
             self._persist_record(session_id, notify=False)
         self._save_id = self.after(10000, self._autosave)
 
@@ -1266,7 +1312,7 @@ class ChatLLM_GUI(tk.Tk):
         if self.current_session_id and not self.save_session_by_id(self.current_session_id):
             return
         previous = self._session_records.get(self.current_session_id)
-        if previous is not None and not self._has_content(previous):
+        if previous is not None and not self._has_content(previous) and previous['id'] not in self.sessions:
             self._session_records.pop(previous['id'], None)
         record = self.session_store.create(self.provider_combo.get(), self.model_combo.get(), self.system_text.get('1.0', tk.END).strip())
         self._session_records[record['id']] = record
@@ -1281,6 +1327,8 @@ class ChatLLM_GUI(tk.Tk):
                 messagebox.showerror('\u8bfb\u53d6\u5931\u8d25', str(error), parent=self)
                 return
             self._session_records[session_id] = record
+            self._session_summaries[session_id] = self.session_store.summary(record)
+        self._session_records.move_to_end(session_id)
         self.current_session_id = session_id
         self.current_messages = record['messages']
         provider = canonical_provider(record.get('provider', DEFAULT_PROVIDER))
@@ -1307,6 +1355,7 @@ class ChatLLM_GUI(tk.Tk):
         self.refresh_listbox_titles()
         self.refresh_chat_display()
         self._sync_controls()
+        self._trim_session_cache()
 
     def on_session_select(self, event=None):
         if self._loading_flag:
@@ -1334,6 +1383,7 @@ class ChatLLM_GUI(tk.Tk):
         self._active_requests.pop(session_id, None)
         self._tasks = {task_id: task for task_id, task in self._tasks.items() if task['session_id'] != session_id}
         self._session_records.pop(session_id, None)
+        self._session_summaries.pop(session_id, None)
         self._dirty_sessions.discard(session_id)
         self.sessions.remove(session_id)
         if self.current_session_id == session_id:
@@ -1563,6 +1613,7 @@ class ChatLLM_GUI(tk.Tk):
         if changed:
             self.refresh_chat_display()
         self._sync_controls()
+        self._trim_session_cache()
 
     def _apply_request_event(self, event, task):
         request = task['request']
@@ -1634,6 +1685,7 @@ class ChatLLM_GUI(tk.Tk):
                 self._apply_ai_session_title(task['session_id'], event.payload)
             else:
                 record['title_requested'] = False
+                self._dirty_sessions.add(record['id'])
         elif task['kind'] == 'thumbnail':
             key = task['key']
             if event.kind == 'result':
