@@ -195,7 +195,8 @@ class SessionStore:
                 prefix=f'.{path.stem}-', suffix='.tmp', delete=False,
             ) as target:
                 temporary_path = Path(target.name)
-                json.dump(snapshot, target, ensure_ascii=False, separators=(',', ':'))
+                json.dump(snapshot, target, ensure_ascii=False, indent=2)
+                target.write('\n')
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(temporary_path, path)
@@ -806,6 +807,120 @@ class ConversationService:
         return ' '.join(result.strip().strip('"\'').split())[:16]
 
 
+class ImageGallery(ttk.Frame):
+    def __init__(self, master, previews, open_media, save_media, position=0):
+        super().__init__(master)
+        self.position = position
+        self._previews = previews
+        self._open_media = open_media
+        self._save_media = save_media
+        self._tiles = []
+        self._photos = []
+        self._columns = 1
+        self._stride = 1
+        self._scroll_width = 1
+        self._width = None
+        self.pack_propagate(False)
+        self.canvas = tk.Canvas(self, bd=0, highlightthickness=0, background='#ffffff', takefocus=True)
+        self.canvas.pack(fill='both', expand=True)
+        self.previous = ttk.Button(self, text='\u25c0', width=3, command=lambda: self.move(-1))
+        self.next = ttk.Button(self, text='\u25b6', width=3, command=lambda: self.move(1))
+        self._tile_height = 240
+        self.configure(height=self._tile_height)
+        for index, (item, thumbnail, status) in enumerate(previews):
+            tile = ttk.Frame(self.canvas)
+            tile.pack_propagate(False)
+            preview = ttk.Label(tile, text=status, anchor='center', justify='center', foreground='#b91c1c' if status and thumbnail is None else '#64748b')
+            preview.pack(fill='both', expand=True)
+            preview.bind('<Button-1>', lambda event: self.canvas.focus_set())
+            preview.bind('<Double-Button-1>', lambda event, item=item: self._open_image(item))
+            preview.bind('<Button-3>', lambda event, item=item, index=index: self._show_save_menu(event, item, index))
+            window = self.canvas.create_window(0, 0, window=tile, anchor='nw')
+            self._tiles.append((window, preview))
+        widgets = [self]
+        while widgets:
+            widget = widgets.pop()
+            for sequence in ('<MouseWheel>', '<Shift-MouseWheel>', '<Button-4>', '<Button-5>'):
+                widget.bind(sequence, self._on_wheel)
+            for sequence in ('<Enter>', '<Motion>', '<Leave>'):
+                widget.bind(sequence, self._update_navigation)
+            widgets.extend(widget.winfo_children())
+        self.canvas.bind('<Left>', lambda event: self.move(-1))
+        self.canvas.bind('<Right>', lambda event: self.move(1))
+        self.bind('<Configure>', lambda event: self._update_navigation())
+        self._save_menu = tk.Menu(self, tearoff=False)
+        self._save_menu.add_command(label='\u4fdd\u5b58\u539f\u56fe...')
+
+    def resize(self, width):
+        if width == self._width:
+            return
+        self._width = width
+        self.configure(width=width)
+        self._columns = min(len(self._previews), max(1, (width + 8) // 308))
+        tile_width = max(1, (width - 8 * (self._columns - 1)) // self._columns)
+        self._stride = tile_width + 8
+        self._scroll_width = max(width, self._stride * len(self._previews) - 8)
+        self.canvas.configure(scrollregion=(0, 0, self._scroll_width, self._tile_height))
+        photos = []
+        for index, ((window, preview), (_, thumbnail, _)) in enumerate(zip(self._tiles, self._previews)):
+            self.canvas.coords(window, index * self._stride, 0)
+            self.canvas.itemconfigure(window, width=tile_width, height=self._tile_height)
+            preview.configure(wraplength=max(1, tile_width - 12))
+            if thumbnail is not None:
+                photo = ImageTk.PhotoImage(ImageOps.contain(thumbnail, (max(1, tile_width - 12), self._tile_height), Image.Resampling.LANCZOS), master=self)
+                photos.append(photo)
+                preview.configure(image=photo, text='')
+        self._photos = photos
+        self.move(0)
+
+    def move(self, step):
+        last = max(0, len(self._previews) - self._columns)
+        self.position = min(last, max(0, self.position + step))
+        self.canvas.xview_moveto(self.position * self._stride / self._scroll_width)
+        self.previous.configure(state='disabled' if self.position == 0 else 'normal')
+        self.next.configure(state='disabled' if self.position == last else 'normal')
+        self._update_navigation()
+        return 'break'
+
+    def _update_navigation(self, event=None):
+        pointer_x, pointer_y = (event.x_root, event.y_root) if event is not None else self.winfo_pointerxy()
+        local_x, local_y = pointer_x - self.winfo_rootx(), pointer_y - self.winfo_rooty()
+        inside = self.winfo_ismapped() and 0 <= local_x < self.winfo_width() and 0 <= local_y < self.winfo_height()
+        if inside and local_x < 40 and self.position > 0:
+            self.previous.place(x=4, rely=0.5, anchor='w', width=32, height=48)
+            self.previous.lift()
+        else:
+            self.previous.place_forget()
+        if inside and local_x >= self.winfo_width() - 40 and self.position < len(self._previews) - self._columns:
+            self.next.place(relx=1, x=-4, rely=0.5, anchor='e', width=32, height=48)
+            self.next.lift()
+        else:
+            self.next.place_forget()
+
+    def _open_image(self, item):
+        self._open_media(item)
+        return 'break'
+
+    def _show_save_menu(self, event, item, index):
+        self._save_menu.entryconfigure(0, command=lambda: self._save_media(item, f'image-{index + 1}.png'))
+        try:
+            self._save_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._save_menu.grab_release()
+        return 'break'
+
+    def _on_wheel(self, event):
+        if event.num == 4 or event.delta > 0:
+            self.move(-1)
+        elif event.num == 5 or event.delta < 0:
+            self.move(1)
+        return 'break'
+
+    def destroy(self):
+        self._photos.clear()
+        super().destroy()
+
+
 class ChatRenderer:
     def __init__(self, text, open_media, save_media, load_thumbnail, retry_request):
         self.text = text
@@ -818,11 +933,14 @@ class ChatRenderer:
         self._signatures = {}
         self._windows = {}
         self._images = {}
+        self._galleries = {}
+        self._gallery_positions = {}
         self._thumbnails = OrderedDict()
         self._active_thumbnail_keys = set()
         self._pending = set()
         self._thumbnail_errors = {}
         self._configure_tags()
+        self.text.bind('<Configure>', self._resize_galleries, add='+')
 
     def _configure_tags(self):
         self.text.tag_configure('user', foreground='#64748b', font=('Microsoft YaHei', 9), spacing1=14, spacing3=4, justify='right')
@@ -867,9 +985,13 @@ class ChatRenderer:
         self._ids.clear()
         self._signatures.clear()
         self._images.clear()
+        self._gallery_positions.clear()
         self.session_id = session_id
 
     def _destroy_message_widgets(self, message_id):
+        gallery = self._galleries.pop(message_id, None)
+        if gallery is not None:
+            self._gallery_positions[message_id] = gallery.position
         for widget in self._windows.pop(message_id, []):
             widget.destroy()
         self._images.pop(message_id, None)
@@ -953,8 +1075,12 @@ class ChatRenderer:
         elif kind == 'image':
             self._insert(message.get('prompt', '') + '\n')
             self._insert(f"{message.get('aspect_ratio', '')} | {len(message.get('images', []))} \u5f20\n", 'info')
-            for index, item in enumerate(message.get('images', [])):
-                self._render_image(message_id, item, index)
+            images = message.get('images', [])
+            if len(images) > 1:
+                self._render_image_gallery(message_id, images)
+            else:
+                for index, item in enumerate(images):
+                    self._render_image(message_id, item, index)
         elif kind == 'music':
             self._insert(message.get('prompt', '') + '\n')
             self._insert(message.get('lyrics', '') + '\n')
@@ -964,6 +1090,27 @@ class ChatRenderer:
             self._insert(message['cache_error'] + '\n', 'error')
         if message.get('dropped_turns'):
             self._insert(f"\u4e0a\u4e0b\u6587\u5df2\u7701\u7565 {message['dropped_turns']} \u8f6e\u8f83\u65e9\u5bf9\u8bdd\n", 'info')
+
+    def _resize_galleries(self, event=None):
+        inset = sum(self.text.winfo_pixels(self.text.cget(option)) for option in ('padx', 'borderwidth', 'highlightthickness'))
+        width = max(1, self.text.winfo_width() - 2 * inset - 2)
+        for gallery in self._galleries.values():
+            gallery.resize(width)
+
+    def _render_image_gallery(self, message_id, items):
+        previews = []
+        for item in items:
+            key = self.thumbnail_key(item)
+            thumbnail = self._thumbnails.get(key)
+            status = self._thumbnail_errors.get(key, '\u6b63\u5728\u52a0\u8f7d\u56fe\u7247...' if key else '\u56fe\u7247\u4e0d\u53ef\u7528')
+            previews.append((dict(item, kind='image'), thumbnail, status))
+            if key and thumbnail is None and key not in self._thumbnail_errors and key not in self._pending:
+                self._pending.add(key)
+                self.load_thumbnail(self.session_id, message_id, dict(item), key)
+        gallery = ImageGallery(self.text, previews, self.open_media, self.save_media, self._gallery_positions.get(message_id, 0))
+        self._galleries[message_id] = gallery
+        self._resize_galleries()
+        self._embed(message_id, gallery)
 
     def _render_image(self, message_id, item, index):
         key = self.thumbnail_key(item)
@@ -1052,7 +1199,7 @@ class ChatLLM_GUI(tk.Tk):
     def setup_ui(self):
         if self._frameless:
             self._setup_titlebar()
-        self.main_paned = tk.PanedWindow(self, orient='horizontal', sashwidth=5, bd=0, bg='#e2e8f0')
+        self.main_paned = tk.PanedWindow(self, orient='horizontal', sashwidth=10, bd=0, bg='#e2e8f0')
         self.main_paned.pack(fill='both', expand=True)
         self.sidebar_frame = ttk.Frame(self.main_paned)
         self.main_paned.add(self.sidebar_frame, width=260, minsize=45)
@@ -1076,8 +1223,8 @@ class ChatLLM_GUI(tk.Tk):
         list_scroll.pack(side='right', fill='y')
         self.history_listbox.config(yscrollcommand=list_scroll.set)
         self.history_listbox.bind('<<ListboxSelect>>', self.on_session_select)
-        settings = ttk.LabelFrame(self.sidebar_paned, text=' \u9009\u62e9\u6a21\u578b ', padding=8)
-        self.sidebar_paned.add(settings, weight=2)
+        settings = ttk.Frame(self.sidebar_paned, padding=8)
+        self.sidebar_paned.add(settings, weight=0)
         ttk.Label(settings, text='\u63d0\u4f9b\u5546:').pack(anchor='w')
         self.provider_combo = ttk.Combobox(settings, state='readonly', values=list(PROVIDERS))
         self.provider_combo.pack(fill='x', pady=(2, 8))
@@ -1089,7 +1236,7 @@ class ChatLLM_GUI(tk.Tk):
         self.model_combo.set(DEFAULT_MODEL)
         self.model_combo.bind('<<ComboboxSelected>>', self.on_model_changed)
         ttk.Label(settings, text='\u7cfb\u7edf\u63d0\u793a\u8bcd:').pack(anchor='w')
-        self.system_text = tk.Text(settings, height=4, wrap='word', font=(FONT_UI, 9), bd=1, relief='solid')
+        self.system_text = tk.Text(settings, height=2, wrap='word', font=(FONT_UI, 9), bd=1, relief='solid')
         self.system_text.pack(fill='both', expand=True, pady=(2, 0))
         self.system_text.insert('1.0', DEFAULT_SYSTEM_PROMPT)
         right = ttk.Frame(self.main_paned)
@@ -1097,11 +1244,15 @@ class ChatLLM_GUI(tk.Tk):
         self.lbl_session_title = ttk.Label(right, text=NEW_SESSION, font=(FONT_UI, 10, 'bold'), padding=(10, 8))
         self.lbl_session_title.pack(fill='x')
         self.lbl_session_title.bind('<Configure>', lambda event: self.lbl_session_title.config(wraplength=max(100, event.width - 20)))
-        self.status_bar = ttk.Label(right, text='\u51c6\u5907\u5c31\u7eea', padding=(8, 4), font=(FONT_UI, 9))
-        self.status_bar.pack(side='bottom', fill='x')
+        status_frame = ttk.Frame(right)
+        status_frame.pack(side='bottom', fill='x')
+        if self._frameless:
+            ttk.Sizegrip(status_frame).pack(side='right', anchor='se')
+        self.status_bar = ttk.Label(status_frame, text='\u51c6\u5907\u5c31\u7eea', padding=(8, 4), font=(FONT_UI, 9))
+        self.status_bar.pack(side='left', fill='x', expand=True)
         self.status_bar.bind('<Configure>', lambda event: self.status_bar.config(wraplength=max(100, event.width - 16)))
         chat_paned = ttk.PanedWindow(right, orient='vertical')
-        chat_paned.pack(fill='both', expand=True, padx=5, pady=5)
+        chat_paned.pack(fill='both', expand=True, padx=5, pady=(5, 0))
         display_frame = ttk.Frame(chat_paned)
         chat_paned.add(display_frame, weight=4)
         self.chat_display = tk.Text(display_frame, wrap='word', state='disabled', bd=1, relief='solid', highlightthickness=0, bg='#ffffff', font=(FONT_UI, 10), padx=10, pady=6, cursor='xterm')
@@ -1113,13 +1264,6 @@ class ChatLLM_GUI(tk.Tk):
         self.chat_display.bind('<Control-C>', self._copy_selection)
         input_frame = ttk.Frame(chat_paned)
         chat_paned.add(input_frame, weight=1)
-        self.params_bar = ttk.Frame(input_frame)
-        self.params_bar.pack(fill='x', pady=(5, 3))
-        self.lbl_aspect = ttk.Label(self.params_bar, text='\u6bd4\u4f8b:')
-        self.img_aspect_combo = ttk.Combobox(self.params_bar, state='readonly', width=7)
-        self.lbl_n = ttk.Label(self.params_bar, text='\u5f20\u6570:')
-        self.img_n_combo = ttk.Combobox(self.params_bar, state='readonly', width=3)
-        self.btn_edit_lyrics = ttk.Button(self.params_bar, text='\u6dfb\u52a0\u6b4c\u8bcd', command=self.edit_lyrics_popup)
         attachment_bar = ttk.Frame(input_frame)
         attachment_bar.pack(fill='x', pady=(0, 3))
         self.btn_add_file = ttk.Button(attachment_bar, text='\u6dfb\u52a0\u9644\u4ef6', command=self.add_file)
@@ -1129,19 +1273,56 @@ class ChatLLM_GUI(tk.Tk):
         self.lbl_attachments = ttk.Label(attachment_bar, text='', font=(FONT_UI, 9))
         self.lbl_attachments.pack(side='left', fill='x', expand=True)
         self.lbl_attachments.bind('<Configure>', lambda event: self.lbl_attachments.config(wraplength=max(60, event.width)))
-        self.input_text = tk.Text(input_frame, height=4, wrap='word', font=(FONT_UI, 10), bd=1, relief='solid', padx=5, pady=5)
+        self.input_text = tk.Text(input_frame, height=6, wrap='word', font=(FONT_UI, 10), bd=1, relief='solid', padx=5, pady=5)
         self.input_text.pack(fill='both', expand=True)
         self.input_text.bind('<Return>', self.on_enter_pressed)
         self.input_text.bind('<Shift-Return>', self.on_shift_enter_pressed)
         command_bar = ttk.Frame(input_frame)
-        command_bar.pack(side='bottom', fill='x', pady=4, before=self.input_text)
+        command_bar.pack(side='bottom', fill='x', pady=(4, 0), before=self.input_text)
         self.btn_send = ttk.Button(command_bar, text='\u53d1\u9001', command=self.send_message)
         self.btn_send.pack(side='right')
         self.btn_cancel = ttk.Button(command_bar, text='\u53d6\u6d88\u8bf7\u6c42', command=self.cancel_request, state='disabled')
         self.btn_cancel.pack(side='right', padx=5)
-        if self._frameless:
-            ttk.Sizegrip(command_bar).pack(side='left')
+        self.params_bar = ttk.Frame(command_bar)
+        self.params_bar.pack(side='left')
+        self.lbl_aspect = ttk.Label(self.params_bar, text='\u6bd4\u4f8b:')
+        self.img_aspect_combo = ttk.Combobox(self.params_bar, state='readonly', width=7)
+        self.lbl_n = ttk.Label(self.params_bar, text='\u5f20\u6570:')
+        self.img_n_combo = ttk.Combobox(self.params_bar, state='readonly', width=3)
+        self.btn_edit_lyrics = ttk.Button(self.params_bar, text='\u6dfb\u52a0\u6b4c\u8bcd', command=self.edit_lyrics_popup)
         self.on_model_changed()
+        self._setup_sash_grips()
+
+    def _setup_sash_grips(self):
+        self._sash_grip = tk.PhotoImage(master=self, width=28, height=10)
+        for offset in (4, 12, 20):
+            self._sash_grip.put('#64748b', to=(offset + 1, 3, offset + 3, 7))
+            self._sash_grip.put('#64748b', to=(offset, 4, offset + 4, 6))
+        self.style.element_create('ChatLLM.Sash.grip', 'image', self._sash_grip)
+        self.style.configure('Horizontal.Sash', sashthickness=10)
+        self.style.layout('Horizontal.Sash', [
+            ('Sash.hsash', {'sticky': 'we', 'children': [
+                ('ChatLLM.Sash.grip', {'sticky': ''}),
+            ]}),
+        ])
+
+        paned = self.main_paned
+        grip = tk.Canvas(paned, width=10, height=28, bd=0, highlightthickness=0, bg='#e2e8f0', cursor='sb_h_double_arrow')
+        for offset in (4, 12, 20):
+            grip.create_oval(3, offset, 7, offset + 4, fill='#64748b', outline='')
+
+        def position_grip(event=None):
+            grip.place(x=paned.sash_coord(0)[0] + 5, rely=0.5, anchor='center')
+            tk.Misc.lift(grip)
+
+        def forward_drag(event, sequence):
+            paned.event_generate(sequence, x=event.x_root - paned.winfo_rootx(), y=event.y_root - paned.winfo_rooty(), rootx=event.x_root, rooty=event.y_root, state=event.state)
+
+        for sequence in ('<ButtonPress-1>', '<B1-Motion>', '<ButtonRelease-1>'):
+            grip.bind(sequence, lambda event, sequence=sequence: forward_drag(event, sequence))
+        paned.bind('<Configure>', position_grip, add='+')
+        self.sidebar_frame.bind('<Configure>', position_grip, add='+')
+        self.after_idle(position_grip)
 
     def _setup_titlebar(self):
         bar = tk.Frame(self, bg='#e2e8f0', height=34)
@@ -1308,15 +1489,56 @@ class ChatLLM_GUI(tk.Tk):
         if self.current_session_id in self.sessions:
             self.history_listbox.selection_set(self.sessions.index(self.current_session_id))
 
-    def new_session(self):
+    def new_session(self, provider=None, model=None):
+        provider = self.provider_combo.get() if provider is None else provider
+        model = self.model_combo.get() if model is None else model
         if self.current_session_id and not self.save_session_by_id(self.current_session_id):
             return
         previous = self._session_records.get(self.current_session_id)
         if previous is not None and not self._has_content(previous) and previous['id'] not in self.sessions:
             self._session_records.pop(previous['id'], None)
-        record = self.session_store.create(self.provider_combo.get(), self.model_combo.get(), self.system_text.get('1.0', tk.END).strip())
+        record = self.session_store.create(provider, model, self.system_text.get('1.0', tk.END).strip())
         self._session_records[record['id']] = record
         self.load_session_by_id(record['id'])
+
+    @staticmethod
+    def _session_model_selection(record):
+        provider, model = record.get('provider'), record.get('model')
+        for message in reversed(record['messages']):
+            options = message.get('request', {})
+            saved_provider = options.get('provider') or message.get('provider')
+            saved_model = options.get('model') or message.get('model')
+            saved_provider = saved_provider if isinstance(saved_provider, str) else None
+            saved_model = saved_model if isinstance(saved_model, str) else None
+            if saved_provider and saved_model:
+                provider, model = saved_provider, saved_model
+                break
+            if provider and model:
+                continue
+            if provider and saved_provider and canonical_provider(saved_provider) != canonical_provider(provider):
+                continue
+            if model and saved_model and saved_model != model:
+                continue
+            provider = provider or saved_provider
+            model = model or saved_model
+        if not provider and model:
+            candidates = [name for name, models in PROVIDERS.items() if model in models]
+            if len(candidates) == 1:
+                provider = candidates[0]
+        provider = canonical_provider(provider or DEFAULT_PROVIDER)
+        return provider, model or PROVIDERS.get(provider, (DEFAULT_MODEL,))[0]
+
+    def _set_model_selection(self, provider, model):
+        providers = list(PROVIDERS)
+        if provider not in providers:
+            providers.append(provider)
+        models = list(PROVIDERS.get(provider, ()))
+        if model not in models:
+            models.append(model)
+        self.provider_combo['values'] = providers
+        self.provider_combo.set(provider)
+        self.model_combo['values'] = models
+        self.model_combo.set(model)
 
     def load_session_by_id(self, session_id):
         record = self._session_records.get(session_id)
@@ -1331,13 +1553,8 @@ class ChatLLM_GUI(tk.Tk):
         self._session_records.move_to_end(session_id)
         self.current_session_id = session_id
         self.current_messages = record['messages']
-        provider = canonical_provider(record.get('provider', DEFAULT_PROVIDER))
-        if provider not in PROVIDERS:
-            provider = DEFAULT_PROVIDER
-        self.provider_combo.set(provider)
-        self.model_combo['values'] = PROVIDERS[provider]
-        model = record.get('model')
-        self.model_combo.set(model if model in PROVIDERS[provider] else PROVIDERS[provider][0])
+        provider, model = self._session_model_selection(record)
+        self._set_model_selection(provider, model)
         self.system_text.delete('1.0', tk.END)
         self.system_text.insert('1.0', record.get('system_prompt', DEFAULT_SYSTEM_PROMPT))
         self.input_text.delete('1.0', tk.END)
@@ -1346,8 +1563,8 @@ class ChatLLM_GUI(tk.Tk):
         self.custom_lyrics = record.get('draft_lyrics', '')
         self.on_model_changed()
         for message in reversed(self.current_messages):
-            if message.get('type') == 'image':
-                spec = capabilities(provider, self.model_combo.get())
+            if message.get('type') == 'image' and model in PROVIDERS.get(provider, ()):
+                spec = capabilities(provider, model)
                 if message.get('aspect_ratio') in spec.ratios:
                     self.img_aspect_combo.set(message['aspect_ratio'])
                 break
@@ -1395,15 +1612,28 @@ class ChatLLM_GUI(tk.Tk):
         self.refresh_listbox_titles()
 
     def update_model_options(self, event=None):
+        if event is not None and self.provider_combo.get() == self._model_selection[0]:
+            return
         models = PROVIDERS[self.provider_combo.get()]
         self.model_combo['values'] = models
         self.model_combo.set(models[0])
-        self.on_model_changed()
+        self.on_model_changed(event)
 
     def on_model_changed(self, event=None):
-        spec = capabilities(self.provider_combo.get(), self.model_combo.get())
+        selection = (self.provider_combo.get(), self.model_combo.get())
+        if event is not None and not self._loading_flag and selection != self._model_selection:
+            self._set_model_selection(*self._model_selection)
+            self.new_session(*selection)
+            return
+        self._model_selection = selection
         for widget in (self.lbl_aspect, self.img_aspect_combo, self.lbl_n, self.img_n_combo, self.btn_edit_lyrics):
             widget.pack_forget()
+        try:
+            spec = capabilities(*selection)
+        except ProviderError:
+            self.update_attachments_ui()
+            self.update_status('\u8be5\u5386\u53f2\u4f1a\u8bdd\u7684\u63d0\u4f9b\u5546\u6216\u578b\u53f7\u5f53\u524d\u4e0d\u53ef\u7528\u3002')
+            return
         if spec.kind == 'image':
             for widget in (self.lbl_aspect, self.img_aspect_combo, self.lbl_n, self.img_n_combo):
                 widget.pack(side='left', padx=(0, 5))
@@ -1437,8 +1667,12 @@ class ChatLLM_GUI(tk.Tk):
     def update_attachments_ui(self):
         self.lbl_attachments.config(text=', '.join(Path(path).name for path in self.attached_files) or '\u672a\u9009\u62e9\u9644\u4ef6')
         self.btn_clear_attachments.config(state='normal' if self.attached_files else 'disabled')
-        spec = capabilities(self.provider_combo.get(), self.model_combo.get())
-        self.btn_add_file.config(state='normal' if spec.kind == 'chat' or spec.reference_images else 'disabled')
+        try:
+            spec = capabilities(self.provider_combo.get(), self.model_combo.get())
+        except ProviderError:
+            self.btn_add_file.config(state='disabled')
+        else:
+            self.btn_add_file.config(state='normal' if spec.kind == 'chat' or spec.reference_images else 'disabled')
 
     def edit_lyrics_popup(self):
         popup = tk.Toplevel(self)
