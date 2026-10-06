@@ -1,4 +1,4 @@
-﻿import json
+import json
 import requests
 
 if __package__:
@@ -9,8 +9,8 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from providers import ModelCapabilities, ProviderError, chat_completion, normalize_images, read_provider_settings, request_timeout, tls_verify
 
-# Constants for duplicate strings
-PROVIDER_NAME = "MiniMax (OpenAI)"
+# 用于消除重复字符串的常量
+PROVIDER_NAME = "MiniMax"
 DISPLAY_ORDER = 10
 ALIASES = {
     "MiniMax (Native)": PROVIDER_NAME, 
@@ -22,8 +22,9 @@ _stream_mode = "auto"
 
 MODELS = {
     PROVIDER_NAME: {
+        "MiniMax-M3.1-Flash-Preview": ModelCapabilities(images=True, video=True),
         "MiniMax-M3": ModelCapabilities(images=True, video=True),
-        "music-2.6": ModelCapabilities(kind="music", streaming=False),
+    #    "music-2.6": ModelCapabilities(kind="music", streaming=False),
         "image-01": ModelCapabilities(
             kind="image", max_count=9, streaming=False, reference_images=True,
             ratios=("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
@@ -33,21 +34,28 @@ MODELS = {
 PROVIDERS = {provider: list(models) for provider, models in MODELS.items()}
 
 
-def provider_settings(native=False):
-    return read_provider_settings(
-        "MINIMAX_API_KEY", "MINIMAX_BASE_URL" if native else "MINIMAX_OPENAI_BASE_URL",
-    )
+def provider_settings(kind="chat"):
+    """MiniMax 的聊天、图像与音乐共用同一个端点。
+
+    ``kind`` 由注册表统一传入，以便和其他适配器保持同一套接口，
+    当前不影响取值。
+    """
+    return read_provider_settings("MINIMAX_API_KEY", "MINIMAX_BASE_URL")
 
 
 def configure_runtime(stream_mode):
+    # "auto" 与 "cumulative" 行为完全相同：chat_completion 把所有非 "delta"
+    # 的模式都当作「每个分片包含截至目前的完整文本」处理。
+    # 之所以仍以 "auto" 为默认，是因为部分 MiniMax 部署下发累积快照，
+    # 但它是一个固定选择，并非自动探测。
     global _stream_mode
     if stream_mode not in {"auto", "delta", "cumulative"}:
-        raise ProviderError("MINIMAX_STREAM_MODE must be auto, delta, or cumulative")
+        raise ProviderError("MINIMAX_STREAM_MODE 必须是 auto、delta 或 cumulative")
     _stream_mode = stream_mode
 
 
-DEFAULT_IMAGE_PROMPT = "A man in a white t-shirt, full-body, standing front view, outdoors, with the Venice Beach sign in the background, Los Angeles. Fashion photography in 90s documentary style, film grain, photorealistic."
-DEFAULT_MUSIC_PROMPT = "Mandopop, Festive, Upbeat, Celebration, New Year"
+DEFAULT_IMAGE_PROMPT = "一名穿白色 T 恤的男子，全身正面站姿，户外，背景是洛杉矶威尼斯海滩标志牌。90 年代纪实风格的时装摄影，胶片颗粒感，照片级写实。"
+DEFAULT_MUSIC_PROMPT = "国语流行，喜庆，欢快，庆祝，新年"
 
 DEFAULT_LYRICS = """[Intro]
 嘿！新年到！
@@ -139,10 +147,39 @@ DEFAULT_LYRICS = """[Intro]
 （耶！）"""
 
 # ──────────────────────────────────────────────────────────────────────── #
-# 1. Image Generation - MiniMax API
+# 1. 图像生成 - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
-def native_post(endpoint, payload):
-    api_key, base_url = provider_settings(native=True)
+def _provider_error(response, payload=None):
+    """把厂商返回的错误说明拼进异常，而不是只留下一个状态码。
+
+    MiniMax 的业务错误走 HTTP 200 + ``base_resp``，网关或权限问题则是 4xx。
+    两种情况都要带出 status_code、status_msg 和 Trace-Id，否则界面上只剩
+    「HTTP 410」这种无法排查的信息——查日志时 Trace-Id 也是唯一凭据。
+    """
+    if payload is None:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+    code, message = None, ''
+    if isinstance(payload, dict):
+        base = payload.get('base_resp')
+        if isinstance(base, dict):
+            code = base.get('status_code')
+            message = base.get('status_msg') or ''
+    if not message:
+        message = (response.text or '').strip()[:200]
+    head = '厂商请求失败（HTTP %s%s）' % (
+        response.status_code, '' if code is None else '，代码 %s' % code,
+    )
+    trace = response.headers.get('Trace-Id') or response.headers.get('Minimax-Request-Id')
+    return ProviderError(
+        head + ('：%s' % message if message else '') + ('（trace %s）' % trace if trace else '')
+    )
+
+
+def native_post(kind, endpoint, payload):
+    api_key, base_url = provider_settings(kind=kind)
     response = requests.post(
         f'{base_url}/{endpoint}', json=payload,
         headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
@@ -150,13 +187,13 @@ def native_post(endpoint, payload):
     )
     try:
         if not 200 <= response.status_code < 300:
-            raise ProviderError(f'Provider request failed (HTTP {response.status_code})')
+            raise _provider_error(response)
         data = response.json()
         if not isinstance(data, dict):
-            raise ProviderError('Provider returned an invalid JSON response')
+            raise ProviderError('厂商返回的 JSON 响应无效')
         status = data.get('base_resp') or {}
         if status.get('status_code', 0) != 0:
-            raise ProviderError(f"Provider rejected the request (code {status['status_code']})")
+            raise _provider_error(response, data)
         return data
     finally:
         response.close()
@@ -164,7 +201,7 @@ def native_post(endpoint, payload):
 
 def image_MiniMax(prompt=DEFAULT_IMAGE_PROMPT, model="image-01", aspect_ratio="16:9", response_format="url", n=1, prompt_optimizer=True, subject_reference=None):
     if not prompt.strip() or len(prompt) > 1500:
-        raise ProviderError("Image prompt must contain 1-1500 characters")
+        raise ProviderError("图片提示词长度必须为 1-1500 个字符")
     payload = {
         "model": model,
         "prompt": prompt,
@@ -177,7 +214,7 @@ def image_MiniMax(prompt=DEFAULT_IMAGE_PROMPT, model="image-01", aspect_ratio="1
     if subject_reference:
         payload["subject_reference"] = subject_reference
 
-    return native_post("image_generation", payload)
+    return native_post("image", "image_generation", payload)
 
 
 def call_image_api(prompt, model, aspect_ratio="16:9", n=1, prompt_optimizer=True, subject_reference=None):
@@ -187,7 +224,7 @@ def call_image_api(prompt, model, aspect_ratio="16:9", n=1, prompt_optimizer=Tru
     )
     data = result.get("data")
     if not isinstance(data, dict):
-        raise ProviderError("MiniMax returned invalid image data")
+        raise ProviderError("MiniMax 返回的图片数据无效")
     if isinstance(data.get("image_base64"), list):
         images = [{"b64_json": encoded} for encoded in data["image_base64"]]
     else:
@@ -196,13 +233,13 @@ def call_image_api(prompt, model, aspect_ratio="16:9", n=1, prompt_optimizer=Tru
 
 
 # ──────────────────────────────────────────────────────────────────────── #
-# 2. Music Generation - MiniMax API
+# 2. 音乐生成 - MiniMax API
 # ──────────────────────────────────────────────────────────────────────── #
 def music_MiniMax(prompt=DEFAULT_MUSIC_PROMPT, lyrics=None, model="music-2.6", sample_rate=44100, bitrate=256000, audio_format="mp3", output_format="url", audio_url=None, audio_base64=None):
     if not lyrics:
         lyrics = DEFAULT_LYRICS
     if len(prompt) > 2000 or not 1 <= len(lyrics) <= 3500:
-        raise ProviderError("Music requires a prompt of at most 2000 characters and lyrics of 1-3500 characters")
+        raise ProviderError("音乐生成要求提示词不超过 2000 个字符、歌词为 1-3500 个字符")
 
     payload = {
         "model": model,
@@ -221,10 +258,10 @@ def music_MiniMax(prompt=DEFAULT_MUSIC_PROMPT, lyrics=None, model="music-2.6", s
     if audio_base64:
         payload["audio_base64"] = audio_base64
 
-    return native_post("music_generation", payload)
+    return native_post("music", "music_generation", payload)
 
 # ──────────────────────────────────────────────────────────────────────── #
-# 3. Text Generation (OpenAI SDK) - Chat Integration Method
+# 3. 文本生成（OpenAI SDK）- 聊天集成方法
 # ──────────────────────────────────────────────────────────────────────── #
 def call_minimax_openai(model, history, prompt, b64_data, system_prompt, **options):
     options.setdefault("extra_body", CHAT_EXTRA_BODY.copy())
@@ -235,7 +272,7 @@ call_chat_api = call_minimax_openai
 call_music_api = music_MiniMax
 
 # ──────────────────────────────────────────────────────────────────────── #
-# Main Interactive Menu
+# 交互式主菜单
 # ──────────────────────────────────────────────────────────────────────── #
 def main():
     from pathlib import Path
@@ -244,9 +281,9 @@ def main():
 
     while True:
         print("\n" + "=" * 25 + " MiniMax API 整合接口测试 " + "=" * 25)
-        print("1. 文本生成 - OpenAI SDK (支持思维链分离)")
-        print("2. 图像生成 - 体验文生图 (Text-to-Image)")
-        print("3. 音乐生成 - 体验歌词编曲 (Music Generation)")
+        print("1. 文本生成 - OpenAI SDK（支持思维链分离）")
+        print("2. 图像生成 - 体验文生图")
+        print("3. 音乐生成 - 体验歌词编曲")
         print("0. 退出程序")
         print("=" * 76)
         
@@ -262,20 +299,20 @@ def main():
             
         elif choice == "1":
             print("\n--- 1. 文本生成 - OpenAI SDK ---")
-            prompt = input("请输入提示词 [回车使用默认: 'Hi, how are you?']: ").strip()
+            prompt = input("请输入提示词 [回车使用默认: '你好，最近怎么样？']: ").strip()
             if not prompt:
-                prompt = "Hi, how are you?"
+                prompt = "你好，最近怎么样？"
             try:
-                reply, thinking = call_minimax_openai(model="MiniMax-M3", history=[], prompt=prompt, b64_data=[], system_prompt="You are a helpful assistant.")
+                reply, thinking = call_minimax_openai(model="MiniMax-M3", history=[], prompt=prompt, b64_data=[], system_prompt="你是一个有用的助手。")
                 if thinking:
                     print(f"Thinking:\n{thinking}\n")
                 print(f"Text:\n{reply}\n")
             except Exception as e:
-                print(f"Error calling OpenAI API: {e}")
+                print(f"调用 OpenAI API 出错：{e}")
             
         elif choice == "2":
             print("\n--- 2. 图像生成 - 体验文生图 ---")
-            prompt = input("请输入图像提示词 [回车使用默认 Venice Beach 摄影风格]: ").strip()
+            prompt = input("请输入图像提示词 [回车使用默认：威尼斯海滩摄影风格]: ").strip()
             if not prompt:
                 prompt = DEFAULT_IMAGE_PROMPT
             n_str = input("请输入生成张数 (1-9) [回车默认: 1]: ").strip()
@@ -285,13 +322,13 @@ def main():
             
         elif choice == "3":
             print("\n--- 3. 音乐生成 - 体验歌词编曲 ---")
-            prompt = input("请输入音乐风格提示词 [回车使用默认: 'Mandopop, Festive, Upbeat, Celebration, New Year']: ").strip()
+            prompt = input("请输入音乐风格提示词 [回车使用默认: '国语流行，喜庆，欢快，庆祝，新年']: ").strip()
             if not prompt:
                 prompt = DEFAULT_MUSIC_PROMPT
             use_default_lyrics = input("是否使用默认新年喜庆歌词？(Y/N) [回车默认: Y]: ").strip().upper()
             lyrics = None
             if use_default_lyrics == "N":
-                lyrics = input("请输入自定义歌词 (支持 [Intro] [Verse] [Chorus] 等标签): ").strip()
+                lyrics = input("请输入自定义歌词（支持 [Intro] [Verse] [Chorus] 等标签）: ").strip()
             result = music_MiniMax(prompt=prompt, lyrics=lyrics)
             print(json.dumps(result, indent=4, ensure_ascii=False))
             

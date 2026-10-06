@@ -1,13 +1,15 @@
-# VS folders
+# VS 相关目录
 **/.vs/
 **/.vscode/
 
-# macOS system hidden file
+# macOS 系统隐藏文件
 **/.DS_Store
 
-# Build folders
+# 构建产物目录
 **/Build/
 **/conversations/
+**/__pycache__/
+**/tests/
 
-# Special files
+# 特殊文件
 **/.env

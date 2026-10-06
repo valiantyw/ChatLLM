@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-QuickRouter API - OpenAI compatible LLM API integration
-Docs: https://doc.quickrouter.ai/
-Console: https://api.quickrouter.ai/console
+QuickRouter API - OpenAI 兼容的 LLM API 集成
+文档：https://doc.quickrouter.ai/
+控制台：https://api.quickrouter.ai/console
 """
 
 import os
@@ -15,9 +15,9 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from providers import ModelCapabilities, ProviderError, capabilities, chat_completion, get_client, normalize_images, read_provider_settings
 
-# Constants for duplicate strings
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
-ERROR_OPENAI_SDK = "Error: Please install the 'openai' SDK first: pip install openai"
+# 用于消除重复字符串的常量
+DEFAULT_SYSTEM_PROMPT = "你是一个有用的助手。"
+ERROR_OPENAI_SDK = "错误：请先安装 openai SDK：pip install openai"
 PROVIDER_NAME = "QuickRouter"
 DISPLAY_ORDER = 20
 
@@ -37,28 +37,29 @@ MODELS = {
 PROVIDERS = {provider: list(models) for provider, models in MODELS.items()}
 
 
-def provider_settings(native=False):
+def provider_settings(kind="chat"):
+    # QuickRouter 的全部能力都走同一个 OpenAI 兼容端点。
     return read_provider_settings("QUICKROUTER_API_KEY", "QUICKROUTER_BASE_URL")
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# 1. Text Generation - QuickRouter (OpenAI compatible)
+# 1. 文本生成 - QuickRouter（OpenAI 兼容）
 # ───────────────────────────────────────────────────────────────────────── #
-def text_QuickRouter(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model="gpt-5.4-mini"):
+def text_QuickRouter(prompt="你好，最近怎么样？", system_prompt=DEFAULT_SYSTEM_PROMPT, model="gpt-5.4-mini"):
     reply, _ = call_quickrouter(model, [], prompt, [], system_prompt)
     return {"text": reply}
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# 2. Image Generation - QuickRouter
+# 2. 图像生成 - QuickRouter
 # ───────────────────────────────────────────────────────────────────────── #
-def image_QuickRouter(prompt="A beautiful sunset over the ocean", model="gpt-image-2", size="1024x1024", response_format=None, n=1):
+def image_QuickRouter(prompt="海面上美丽的日落", model="gpt-image-2", size="1024x1024", response_format=None, n=1):
     if not prompt.strip() or len(prompt) > 32000:
-        raise ProviderError("Image prompt must contain 1-32000 characters")
+        raise ProviderError("图片提示词长度必须为 1-32000 个字符")
     options = dict(model=model, prompt=prompt, size=size, n=n)
     if response_format is not None:
         options["response_format"] = response_format
-    response = get_client(PROVIDER_NAME).images.generate(**options)
+    response = get_client(PROVIDER_NAME, kind="image").images.generate(**options)
     return response.model_dump()
 
 
@@ -72,7 +73,7 @@ def call_image_api(prompt, model, aspect_ratio="1:1", n=1, prompt_optimizer=True
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# Core Chat Integration Method
+# 聊天集成的核心方法
 # ───────────────────────────────────────────────────────────────────────── #
 def call_quickrouter(model, history, prompt, b64_images, system_prompt, **options):
     return chat_completion(PROVIDER_NAME, model, history, prompt, b64_images, system_prompt, **options)
@@ -81,25 +82,25 @@ call_chat_api = call_quickrouter
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# Main Interactive Menu (for testing)
+# 交互式主菜单（供测试使用）
 # ───────────────────────────────────────────────────────────────────────── #
 def main():
     from pathlib import Path
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
-    print("QuickRouter API - Testing Menu")
+    print("QuickRouter API - 测试菜单")
     print("=" * 50)
     
     api_key = os.getenv("QUICKROUTER_API_KEY")
     if not api_key:
-        print("Please set QUICKROUTER_API_KEY in your .env file")
+        print("请在 .env 文件中设置 QUICKROUTER_API_KEY")
         return
     
     
-    # Test text generation
-    print("Testing text generation...")
+    # 测试文本生成
+    print("正在测试文本生成...")
     result = text_QuickRouter(
-        prompt="Hello, who are you?",
+        prompt="你好，你是谁？",
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         model="gpt-5.4-mini"
     )

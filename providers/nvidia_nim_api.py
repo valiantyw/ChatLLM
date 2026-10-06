@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-NVIDIA NIM API - NVIDIA NIM microservices for LLM API
-Docs: https://docs.nvidia.com/nim/
-API Catalog: https://build.nvidia.com
+NVIDIA NIM API - 面向 LLM API 的 NVIDIA NIM 微服务
+文档：https://docs.nvidia.com/nim/
+API 目录：https://build.nvidia.com
 """
 
 import os
@@ -15,8 +15,8 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from providers import ModelCapabilities, ProviderError, chat_completion, read_provider_settings
 
-# Constants for duplicate strings
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+# 用于消除重复字符串的常量
+DEFAULT_SYSTEM_PROMPT = "你是一个有用的助手。"
 DEFAULT_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 PROVIDER_NAME = "NVIDIA NIM"
 DISPLAY_ORDER = 30
@@ -31,27 +31,21 @@ MODELS = {
 PROVIDERS = {provider: list(models) for provider, models in MODELS.items()}
 
 
-def provider_settings(native=False):
+def provider_settings(kind="chat"):
+    # 本应用只使用 NVIDIA NIM 的聊天能力。
     return read_provider_settings("NVIDIA_API_KEY", "NVIDIA_NIM_BASE_URL")
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# 1. Text Generation - NVIDIA NIM (OpenAI compatible)
+# 1. 文本生成 - NVIDIA NIM（OpenAI 兼容）
 # ───────────────────────────────────────────────────────────────────────── #
-def text_NVIDIA(prompt="Hi, how are you?", system_prompt=DEFAULT_SYSTEM_PROMPT, model=DEFAULT_MODEL):
+def text_NVIDIA(prompt="你好，最近怎么样？", system_prompt=DEFAULT_SYSTEM_PROMPT, model=DEFAULT_MODEL):
     reply, _ = call_nvidia_nim(model, [], prompt, [], system_prompt)
     return {"text": reply}
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# 2. Image Generation - NVIDIA NIM (if supported)
-# ───────────────────────────────────────────────────────────────────────── #
-def image_NVIDIA(prompt="A beautiful sunset over the ocean", model="stable-diffusion-xl", size="1024x1024"):
-    raise ProviderError("NVIDIA NIM image generation is not supported by this application")
-
-
-# ───────────────────────────────────────────────────────────────────────── #
-# Core Chat Integration Method
+# 聊天集成的核心方法
 # ───────────────────────────────────────────────────────────────────────── #
 def call_nvidia_nim(model, history, prompt, b64_images, system_prompt, **options):
     return chat_completion(PROVIDER_NAME, model, history, prompt, b64_images, system_prompt, **options)
@@ -60,26 +54,26 @@ call_chat_api = call_nvidia_nim
 
 
 # ───────────────────────────────────────────────────────────────────────── #
-# Main Interactive Menu (for testing)
+# 交互式主菜单（供测试使用）
 # ───────────────────────────────────────────────────────────────────────── #
 def main():
     from pathlib import Path
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
-    print("NVIDIA NIM API - Testing Menu")
+    print("NVIDIA NIM API - 测试菜单")
     print("=" * 50)
     
     api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
-        print("Please set NVIDIA_API_KEY in your .env file")
-        print("Get your API key from: https://build.nvidia.com/explore/discover")
+        print("请在 .env 文件中设置 NVIDIA_API_KEY")
+        print("获取 API key：https://build.nvidia.com/explore/discover")
         return
     
     
-    # Test text generation
-    print("Testing text generation...")
+    # 测试文本生成
+    print("正在测试文本生成...")
     result = text_NVIDIA(
-        prompt="Hello, who are you?",
+        prompt="你好，你是谁？",
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         model=DEFAULT_MODEL
     )
